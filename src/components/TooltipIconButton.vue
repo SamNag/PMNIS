@@ -6,6 +6,7 @@ defineProps<{
   label: string
   active?: boolean
   disabled?: boolean
+  variant?: 'default' | 'danger'
 }>()
 
 defineEmits<{
@@ -21,9 +22,11 @@ defineEmits<{
     :title="label"
     class="group relative z-10 aspect-square w-10 shrink-0 rounded-xl border text-zinc-600 transition-all duration-200"
     :class="[
-      active
-        ? 'border-zinc-900 bg-zinc-900 text-zinc-50 shadow-panel'
-        : 'border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50',
+      variant === 'danger' && active
+        ? 'border-red-500 bg-red-500 text-white shadow-panel hover:bg-red-600'
+        : active
+          ? 'border-zinc-900 bg-zinc-900 text-zinc-50 shadow-panel'
+          : 'border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50',
       disabled ? 'cursor-not-allowed opacity-45' : '',
     ]"
     @click="$emit('click')"

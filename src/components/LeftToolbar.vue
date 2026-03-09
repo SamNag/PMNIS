@@ -42,6 +42,7 @@ const {
   brushSize,
   canUndoManual,
   canRedoManual,
+  isFullscreenMode,
 } = storeToRefs(store)
 
 const selectTool = (tool: ToolId, section: 'image' | 'manual' | 'ai') => store.setActiveTool(tool, section)
@@ -88,11 +89,21 @@ const adjustControlConfig = computed(() => {
 })
 
 const openManualTool = (tool: 'brush' | 'eraser') => {
+  // Toggle the overlay if clicking the same tool that's already active
+  if (overlayMode.value === 'size' && activeTool.value === tool) {
+    overlayMode.value = null
+    return
+  }
   selectTool(tool, 'manual')
   overlayMode.value = 'size'
 }
 
 const openAdjustControl = (control: AdjustControl) => {
+  // Toggle off if clicking the same control
+  if (overlayMode.value === 'adjust' && activeAdjustControl.value === control) {
+    overlayMode.value = null
+    return
+  }
   activeAdjustControl.value = control
   overlayMode.value = 'adjust'
 }
@@ -126,6 +137,10 @@ watch(activeToolbarSection, () => {
       <ToolbarSectionComponent v-if="activeToolbarSection === 'image'" title="Image">
         <TooltipIconButton :icon="ZoomIn" label="Zoom" :active="activeTool === 'zoom'" @click="selectTool('zoom', 'image')" />
         <TooltipIconButton :icon="Hand" label="Pan" :active="activeTool === 'pan'" @click="selectTool('pan', 'image')" />
+
+        <!-- Divider after Zoom/Pan -->
+        <div class="my-1 h-px w-full bg-zinc-200" />
+
         <TooltipIconButton
           :icon="SunMedium"
           label="Brightness"
@@ -147,9 +162,19 @@ watch(activeToolbarSection, () => {
           :disabled="!isPatientLoaded"
           @click="openAdjustControl('threshold')"
         />
-        <TooltipIconButton :icon="Maximize2" label="Fit to screen" @click="selectTool('fit', 'image')" />
-        <TooltipIconButton :icon="RotateCcw" label="Reset view" @click="selectTool('reset', 'image')" />
         <TooltipIconButton :icon="ScanLine" label="Invert" @click="selectTool('invert', 'image')" />
+
+        <!-- Divider before Fit/Reset -->
+        <div class="my-1 h-px w-full bg-zinc-200" />
+
+        <TooltipIconButton
+          :icon="isFullscreenMode ? X : Maximize2"
+          :label="isFullscreenMode ? 'Exit fullscreen' : 'Fullscreen'"
+          :active="isFullscreenMode"
+          :variant="isFullscreenMode ? 'danger' : 'default'"
+          @click="store.toggleFullscreenMode()"
+        />
+        <TooltipIconButton :icon="RotateCcw" label="Reset view" @click="selectTool('reset', 'image')" />
       </ToolbarSectionComponent>
 
       <ToolbarSectionComponent v-else-if="activeToolbarSection === 'manual'" title="Manual">

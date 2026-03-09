@@ -3,7 +3,8 @@ import { defineStore } from 'pinia'
 import { mockPatient } from '../data/mockPatient'
 import { createMockBrainVolume } from '../data/mockVolume'
 import { makeId } from '../lib/ids'
-import { getDefaultSliceForView, getViewMaxSlice, sampleMaskPoints } from '../lib/volume'
+import { loadNiftiFile } from '../lib/niftiLoader'
+import { getDefaultSliceForView, getViewMaxSlice } from '../lib/volume'
 import type {
   AiMode,
   AiState,
@@ -55,6 +56,9 @@ export const useViewerStore = defineStore('viewer', () => {
   const layout = ref<LayoutMode>('2x2')
   const activeViewportId = ref('vp-1')
   const viewports = ref<ViewportState[]>(defaultViewports())
+  const isFullscreenMode = ref(false)
+  const fullscreenViewportId = ref<string | null>(null)
+  const fullscreenViewportState = ref<ViewportState | null>(null)
 
   const activeTool = ref<ToolId>('zoom')
   const activeToolbarSection = ref<ToolbarSection>('image')
@@ -72,9 +76,6 @@ export const useViewerStore = defineStore('viewer', () => {
   const aiState = ref<AiState>('idle')
   const aiProgress = ref(0)
   const compareOverlay = ref(false)
-
-  const threeDMaskPoints = ref<Array<{ x: number; y: number; z: number }>>([])
-
   const activeViewport = computed<ViewportState | null>(
     () => viewports.value.find((viewport) => viewport.id === activeViewportId.value) ?? viewports.value[0] ?? null,
   )
@@ -173,11 +174,97 @@ export const useViewerStore = defineStore('viewer', () => {
       }
     })
     activeViewportId.value = 'vp-1'
-    threeDMaskPoints.value = sampleMaskPoints(volume)
+  }
+
+  const loadNiftiPatient = async (file: File, patientName?: string) => {
+    try {
+      const volume = await loadNiftiFile(file)
+      volumeData.value = volume
+
+      // Create a custom patient from the file
+      currentPatient.value = {
+        id: makeId('patient'),
+        name: patientName || file.name.replace(/\.(nii|nii\.gz)$/, ''),
+        age: 0,
+        scanDate: new Date().toISOString().split('T')[0] || '', // Ensure scanDate is always a string
+        studyType: 'MRI',
+      }
+
+      isPatientLoaded.value = true
+      mriLoaded.value = true
+      tumorMaskLoaded.value = false
+      showTumorMask.value = false
+
+      renderSettings.value = defaultRenderSettings()
+      annotationLayers.value = []
+      activeLayerId.value = null
+
+      viewports.value = defaultViewports().map((viewport) => {
+        if (viewport.assignedView === 'threeD') {
+          return { ...viewport, sliceIndex: 0 }
+        }
+        return {
+          ...viewport,
+          sliceIndex: getDefaultSliceForView(viewport.assignedView, volume),
+        }
+      })
+      activeViewportId.value = 'vp-1'
+    } catch (error) {
+      console.error('Failed to load NIfTI file:', error)
+    }
   }
 
   const setLayout = (next: LayoutMode) => {
     layout.value = next
+  }
+
+  const toggleFullscreenMode = (viewportId?: string) => {
+    if (isFullscreenMode.value) {
+      // Exit fullscreen
+      isFullscreenMode.value = false
+      fullscreenViewportId.value = null
+      fullscreenViewportState.value = null
+    } else {
+      // Enter fullscreen with the specified viewport or active viewport
+      const targetId = viewportId ?? activeViewportId.value
+      const sourceViewport = viewports.value.find(vp => vp.id === targetId)
+      if (sourceViewport) {
+        // Create a copy of the viewport for fullscreen mode
+        fullscreenViewportState.value = {
+          ...sourceViewport,
+          id: 'fullscreen-vp',
+          label: 'Fullscreen',
+        }
+      }
+      isFullscreenMode.value = true
+      fullscreenViewportId.value = targetId
+    }
+  }
+
+  const switchFullscreenViewport = (viewportId: string) => {
+    if (!isFullscreenMode.value) return
+    fullscreenViewportId.value = viewportId
+    activeViewportId.value = viewportId
+  }
+
+  const setFullscreenView = (view: ViewType) => {
+    if (!isFullscreenMode.value || !fullscreenViewportState.value) return
+    fullscreenViewportState.value.assignedView = view
+    if (volumeData.value && view !== 'threeD') {
+      fullscreenViewportState.value.sliceIndex = getDefaultSliceForView(view, volumeData.value)
+    }
+  }
+
+  const setFullscreenSlice = (value: number) => {
+    if (!fullscreenViewportState.value || !volumeData.value || fullscreenViewportState.value.assignedView === 'threeD') return
+    const maxSlice = getViewMaxSlice(fullscreenViewportState.value.assignedView, volumeData.value)
+    fullscreenViewportState.value.sliceIndex = Math.max(0, Math.min(maxSlice, value))
+  }
+
+  const updateFullscreenSlice = (delta: number) => {
+    if (!fullscreenViewportState.value || !volumeData.value || fullscreenViewportState.value.assignedView === 'threeD') return
+    const maxSlice = getViewMaxSlice(fullscreenViewportState.value.assignedView, volumeData.value)
+    fullscreenViewportState.value.sliceIndex = Math.max(0, Math.min(maxSlice, fullscreenViewportState.value.sliceIndex + delta))
   }
 
   const setActiveViewport = (viewportId: string) => {
@@ -461,6 +548,9 @@ export const useViewerStore = defineStore('viewer', () => {
     viewports,
     activeViewport,
     visibleViewports,
+    isFullscreenMode,
+    fullscreenViewportId,
+    fullscreenViewportState,
     activeTool,
     activeToolbarSection,
     renderSettings,
@@ -478,9 +568,14 @@ export const useViewerStore = defineStore('viewer', () => {
     aiProgress,
     compareOverlay,
     canRunAi,
-    threeDMaskPoints,
     loadPatient,
+    loadNiftiPatient,
     setLayout,
+    toggleFullscreenMode,
+    switchFullscreenViewport,
+    setFullscreenView,
+    setFullscreenSlice,
+    updateFullscreenSlice,
     setActiveViewport,
     assignViewToActiveViewport,
     assignViewToViewport,

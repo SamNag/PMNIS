@@ -53,10 +53,10 @@ export const readVoxelByView = (
 
 export const sampleMaskPoints = (
   volume: VolumeData,
-  maxPoints = 1800,
+  maxPoints = 200000000,
 ): Array<{ x: number; y: number; z: number }> => {
   const points: Array<{ x: number; y: number; z: number }> = []
-  const step = 2
+  const step = 1
 
   for (let z = 0; z < volume.depth; z += step) {
     for (let y = 0; y < volume.height; y += step) {
@@ -77,3 +77,63 @@ export const sampleMaskPoints = (
 
   return points
 }
+
+/**
+ * Sample 3D points from MRI intensity data for volumetric rendering.
+ * Samples points throughout the volume with intensity values for proper visualization.
+ */
+export const sampleMriSurfacePoints = (
+  volume: VolumeData,
+  maxPoints = 200000000,
+): Array<{ x: number; y: number; z: number; intensity: number }> => {
+  const points: Array<{ x: number; y: number; z: number; intensity: number }> = []
+
+  // Find intensity statistics for adaptive thresholding
+  let maxIntensity = 0
+  let sumIntensity = 0
+  let countNonZero = 0
+
+  for (let i = 0; i < volume.mri.length; i++) {
+    const val = volume.mri[i] ?? 0
+    if (val > 0) {
+      sumIntensity += val
+      countNonZero++
+      if (val > maxIntensity) maxIntensity = val
+    }
+  }
+
+  const avgIntensity = countNonZero > 0 ? sumIntensity / countNonZero : 128
+
+  // Very low threshold to include all visible tissue
+  const minThreshold = Math.max(1, avgIntensity * 0.01)
+
+  // Step size of 1 for maximum density
+  const step = 1
+
+  for (let z = 0; z < volume.depth; z += step) {
+    for (let y = 0; y < volume.height; y += step) {
+      for (let x = 0; x < volume.width; x += step) {
+        const idx = index3d(x, y, z, volume.width, volume.height)
+        const intensity = volume.mri[idx] ?? 0
+
+        // Skip very low intensity voxels (background/air)
+        if (intensity < minThreshold) continue
+
+        // Normalize intensity to 0-1 range
+        const normalizedIntensity = intensity / maxIntensity
+
+        points.push({
+          x: x / volume.width - 0.5,
+          y: y / volume.height - 0.5,
+          z: z / volume.depth - 0.5,
+          intensity: normalizedIntensity,
+        })
+
+        if (points.length >= maxPoints) return points
+      }
+    }
+  }
+
+  return points
+}
+

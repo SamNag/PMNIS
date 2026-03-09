@@ -1,15 +1,89 @@
 <script setup lang="ts">
-import { Layers } from 'lucide-vue-next'
+import { Layers, Upload } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
+import { ref } from 'vue'
 import { useViewerStore } from '../stores/viewerStore'
 import PatientInfoCard from './PatientInfoCard.vue'
 
+defineProps<{
+  compact?: boolean
+}>()
+
 const store = useViewerStore()
 const { currentPatient, isPatientLoaded } = storeToRefs(store)
+
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const isLoading = ref(false)
+
+const triggerFileUpload = () => {
+  fileInputRef.value?.click()
+}
+
+const handleFileUpload = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  isLoading.value = true
+  try {
+    await store.loadNiftiPatient(file)
+  } catch (error) {
+    console.error('Failed to load NIfTI file:', error)
+    alert('Failed to load NIfTI file. Please make sure it is a valid .nii file.')
+  } finally {
+    isLoading.value = false
+    // Reset input so same file can be selected again
+    input.value = ''
+  }
+}
 </script>
 
 <template>
-  <header class="rounded-2xl border border-zinc-200 bg-white/90 p-4 shadow-panel">
+  <!-- Compact header for fullscreen mode - all info inline -->
+  <header v-if="compact" class="rounded-xl border border-zinc-200 bg-white/90 shadow-panel">
+    <div class="flex items-center gap-2 p-1.5">
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 px-2.5 py-1 text-[11px] font-semibold text-zinc-100 transition hover:bg-zinc-800"
+        @click="store.loadPatient()"
+      >
+        <Layers class="h-3 w-3" />
+        Demo
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-zinc-700 transition hover:bg-zinc-50"
+        :disabled="isLoading"
+        @click="triggerFileUpload"
+      >
+        <Upload class="h-3 w-3" />
+        {{ isLoading ? '...' : 'Upload' }}
+      </button>
+      <input
+        ref="fileInputRef"
+        type="file"
+        accept=".nii,.nii.gz"
+        class="hidden"
+        @change="handleFileUpload"
+      />
+      <!-- Patient info inline with separators -->
+      <template v-if="isPatientLoaded && currentPatient">
+        <span class="mx-1 h-4 w-px bg-zinc-300" />
+        <span class="text-[11px] font-semibold text-zinc-800">{{ currentPatient.name }}</span>
+        <span class="text-[10px] text-zinc-400">•</span>
+        <span class="text-[10px] text-zinc-500">ID: {{ currentPatient.id }}</span>
+        <span class="text-[10px] text-zinc-400">•</span>
+        <span class="text-[10px] text-zinc-500">{{ currentPatient.studyType }}</span>
+        <span class="text-[10px] text-zinc-400">•</span>
+        <span class="text-[10px] text-zinc-500">{{ currentPatient.scanDate }}</span>
+        <span class="text-[10px] text-zinc-400">•</span>
+        <span class="text-[10px] text-zinc-500">Age: {{ currentPatient.age }}</span>
+      </template>
+    </div>
+  </header>
+
+  <!-- Normal full header -->
+  <header v-else class="rounded-2xl border border-zinc-200 bg-white/90 p-4 shadow-panel">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-3">
         <button
@@ -18,8 +92,24 @@ const { currentPatient, isPatientLoaded } = storeToRefs(store)
           @click="store.loadPatient()"
         >
           <Layers class="h-4 w-4" />
-          Load Patient
+          Load Demo
         </button>
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+          :disabled="isLoading"
+          @click="triggerFileUpload"
+        >
+          <Upload class="h-4 w-4" />
+          {{ isLoading ? 'Loading...' : 'Upload MRI' }}
+        </button>
+        <input
+          ref="fileInputRef"
+          type="file"
+          accept=".nii,.nii.gz"
+          class="hidden"
+          @change="handleFileUpload"
+        />
         <p class="text-xs text-zinc-500">
           <span class="font-semibold text-zinc-700">Frontend-only prototype</span>
           · local MRI volume + tumor mask

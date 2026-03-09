@@ -4,11 +4,14 @@ import { storeToRefs } from 'pinia'
 import { Eye } from 'lucide-vue-next'
 import { useViewerStore } from '../stores/viewerStore'
 import type { ViewType, ViewportState } from '../types/viewer'
-import { fitCanvasToDevicePixelRatio, renderSlice, renderThreeD, screenToSlice, type RenderTransform } from '../lib/rendering'
+import { fitCanvasToDevicePixelRatio, renderSlice, screenToSlice, type RenderTransform } from '../lib/rendering'
+import { renderThreeDVolume, destroyThreeDVolume } from '../lib/rendering3d'
 import { getSliceSize, getViewMaxSlice } from '../lib/volume'
 
 const props = defineProps<{
   viewport: ViewportState
+  isThumbnail?: boolean
+  isFullscreen?: boolean
 }>()
 
 const store = useViewerStore()
@@ -28,10 +31,19 @@ const {
 } = storeToRefs(store)
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+const canvas3DRef = ref<HTMLCanvasElement | null>(null)
 const panelRef = ref<HTMLDivElement | null>(null)
 const animationFrame = ref<number | null>(null)
 const transformRef = ref<RenderTransform>({ drawX: 0, drawY: 0, drawW: 0, drawH: 0 })
-const angleRef = ref(0)
+const angleXRef = ref(0)
+const angleYRef = ref(0)
+const zoom3DRef = ref(1)
+const pan3DXRef = ref(0)
+const pan3DYRef = ref(0)
+const isDragging3D = ref(false)
+const isPanning = ref(false)
+const lastDragPos = ref<{ x: number; y: number } | null>(null)
+const activeMouseButton = ref<number | null>(null)
 const isDrawing = ref(false)
 const cursorPoint = ref<{ x: number; y: number } | null>(null)
 const lastDrawnPoint = ref<{ x: number; y: number; slice: number; view: Exclude<ViewType, 'threeD'> } | null>(null)
@@ -109,20 +121,105 @@ const draw2D = () => {
 }
 
 const draw3D = () => {
-  if (!canvasRef.value || !volumeData.value || props.viewport.assignedView !== 'threeD') return
-  renderThreeD(canvasRef.value, store.threeDMaskPoints, angleRef.value)
-  angleRef.value += 0.01
-  animationFrame.value = window.requestAnimationFrame(draw3D)
+  if (!canvas3DRef.value || !volumeData.value || props.viewport.assignedView !== 'threeD') return
+  renderThreeDVolume(
+    canvas3DRef.value,
+    volumeData.value,
+    angleYRef.value,
+    angleXRef.value,
+    zoom3DRef.value,
+    pan3DXRef.value,
+    pan3DYRef.value,
+  )
+}
+
+const handle3DPointerDown = (event: PointerEvent) => {
+  if (props.viewport.assignedView !== 'threeD') return
+
+  activeMouseButton.value = event.button
+  lastDragPos.value = { x: event.clientX, y: event.clientY }
+  canvas3DRef.value?.setPointerCapture(event.pointerId)
+  // In 3D, "pan" means rotating/grabbing the model
+  // Left button (0): Rotate
+  // Right button (2): Rotate (same as pan in 3D context)
+  // Pan tool + left button: Rotate
+  // All drag actions rotate the 3D model
+  isDragging3D.value = true
+}
+
+const handle3DPointerMove = (event: PointerEvent) => {
+  if (!isDragging3D.value || !lastDragPos.value || props.viewport.assignedView !== 'threeD') return
+
+  const deltaX = event.clientX - lastDragPos.value.x
+  const deltaY = event.clientY - lastDragPos.value.y
+
+  // Rotate the 3D view (grab and rotate)
+  angleYRef.value += deltaX * 0.01
+  angleXRef.value += deltaY * 0.01
+  // Clamp X rotation to prevent flipping
+  angleXRef.value = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, angleXRef.value))
+
+  lastDragPos.value = { x: event.clientX, y: event.clientY }
+  draw3D()
+}
+
+const handle3DPointerUp = (event: PointerEvent) => {
+  if (props.viewport.assignedView !== 'threeD') return
+  isDragging3D.value = false
+  isPanning.value = false
+  activeMouseButton.value = null
+  lastDragPos.value = null
+  canvas3DRef.value?.releasePointerCapture(event.pointerId)
+}
+
+const handle3DWheel = (event: WheelEvent) => {
+  if (props.viewport.assignedView !== 'threeD') return
+  event.preventDefault()
+
+  // Zoom in/out
+  const zoomDelta = event.deltaY > 0 ? -0.1 : 0.1
+  zoom3DRef.value = Math.max(0.3, Math.min(5, zoom3DRef.value + zoomDelta))
+  draw3D()
+}
+
+// 2D Pan handlers
+const handle2DPanStart = (event: PointerEvent) => {
+  isPanning.value = true
+  lastDragPos.value = { x: event.clientX, y: event.clientY }
+  canvasRef.value?.setPointerCapture(event.pointerId)
+}
+
+const handle2DPanMove = (event: PointerEvent) => {
+  if (!isPanning.value || !lastDragPos.value) return
+
+  const deltaX = event.clientX - lastDragPos.value.x
+  const deltaY = event.clientY - lastDragPos.value.y
+
+  // Update render settings pan
+  renderSettings.value.panX += deltaX
+  renderSettings.value.panY += deltaY
+
+  lastDragPos.value = { x: event.clientX, y: event.clientY }
+  draw2D()
+}
+
+const handle2DPanEnd = (event: PointerEvent) => {
+  isPanning.value = false
+  lastDragPos.value = null
+  canvasRef.value?.releasePointerCapture(event.pointerId)
 }
 
 const draw = () => {
-  if (!canvasRef.value) return
   if (!isPatientLoaded.value) {
-    fitCanvasToDevicePixelRatio(canvasRef.value)
-    const ctx = canvasRef.value.getContext('2d')
-    if (!ctx) return
-    ctx.fillStyle = '#27272a'
-    ctx.fillRect(0, 0, canvasRef.value.width, canvasRef.value.height)
+    // Clear 2D canvas
+    if (canvasRef.value) {
+      fitCanvasToDevicePixelRatio(canvasRef.value)
+      const ctx = canvasRef.value.getContext('2d')
+      if (ctx) {
+        ctx.fillStyle = '#27272a'
+        ctx.fillRect(0, 0, canvasRef.value.width, canvasRef.value.height)
+      }
+    }
     return
   }
 
@@ -143,8 +240,19 @@ const draw = () => {
 const handleWheel = (event: WheelEvent) => {
   event.preventDefault()
   if (!isPatientLoaded.value) return
-  if (props.viewport.assignedView === 'threeD') return
-  store.updateSlice(props.viewport.id, event.deltaY > 0 ? 1 : -1)
+
+  // Handle 3D zoom
+  if (props.viewport.assignedView === 'threeD') {
+    handle3DWheel(event)
+    return
+  }
+
+  const delta = event.deltaY > 0 ? 1 : -1
+  if (props.isFullscreen) {
+    store.updateFullscreenSlice(delta)
+  } else {
+    store.updateSlice(props.viewport.id, delta)
+  }
 }
 
 const mapPointerToSlice = (event: PointerEvent): { x: number; y: number; mappedX: number; mappedY: number } | null => {
@@ -205,7 +313,24 @@ const releaseDrawing = (pointerId?: number) => {
 
 const handlePointerDown = (event: PointerEvent) => {
   store.setActiveViewport(props.viewport.id)
-  if (!canAnnotate.value || props.viewport.assignedView === 'threeD' || !canvasRef.value) return
+
+  // Handle 3D view
+  if (props.viewport.assignedView === 'threeD') {
+    handle3DPointerDown(event)
+    return
+  }
+
+  // Handle 2D views
+  activeMouseButton.value = event.button
+
+  // Right button (2) or Pan tool + left button = Pan mode
+  if (event.button === 2 || (event.button === 0 && activeTool.value === 'pan')) {
+    handle2DPanStart(event)
+    return
+  }
+
+  // Left button with annotation tools
+  if (!canAnnotate.value || !canvasRef.value) return
 
   store.beginManualEdit()
   isDrawing.value = true
@@ -215,6 +340,18 @@ const handlePointerDown = (event: PointerEvent) => {
 }
 
 const handlePointerMove = (event: PointerEvent) => {
+  // Handle 3D view
+  if (props.viewport.assignedView === 'threeD') {
+    handle3DPointerMove(event)
+    return
+  }
+
+  // Handle 2D panning
+  if (isPanning.value) {
+    handle2DPanMove(event)
+    return
+  }
+
   const pointer = mapPointerToSlice(event)
   cursorPoint.value = pointer ? { x: pointer.x, y: pointer.y } : null
   if (!isDrawing.value) return
@@ -222,17 +359,37 @@ const handlePointerMove = (event: PointerEvent) => {
 }
 
 const handlePointerUp = (event: PointerEvent) => {
+  // Handle 3D view
+  if (props.viewport.assignedView === 'threeD') {
+    handle3DPointerUp(event)
+    return
+  }
+
+  // Handle 2D panning
+  if (isPanning.value) {
+    handle2DPanEnd(event)
+    return
+  }
+
+  activeMouseButton.value = null
   releaseDrawing(event.pointerId)
 }
 
 const handlePointerLeave = () => {
   cursorPoint.value = null
-  releaseDrawing()
+  if (!isPanning.value) {
+    releaseDrawing()
+  }
 }
 
 const handleViewAssignment = (event: Event) => {
   const target = event.target as HTMLSelectElement
-  store.assignViewToViewport(props.viewport.id, target.value as ViewType)
+  const view = target.value as ViewType
+  if (props.isFullscreen) {
+    store.setFullscreenView(view)
+  } else {
+    store.assignViewToViewport(props.viewport.id, view)
+  }
 }
 
 onMounted(() => {
@@ -246,6 +403,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (resizeObserver && panelRef.value) resizeObserver.unobserve(panelRef.value)
   if (animationFrame.value) window.cancelAnimationFrame(animationFrame.value)
+  if (canvas3DRef.value) destroyThreeDVolume(canvas3DRef.value)
   releaseDrawing()
 })
 
@@ -292,13 +450,13 @@ watch(activeViewportId, (next) => {
     class="relative min-h-[240px] overflow-hidden rounded-2xl border bg-zinc-900 shadow-panel transition"
     :class="isActive ? 'border-zinc-900 ring-2 ring-zinc-300' : 'border-zinc-300'"
   >
-    <div class="absolute left-2 top-2 z-20 inline-flex items-center gap-2 rounded-lg bg-zinc-950/70 px-2 py-1 text-[11px] text-zinc-100 backdrop-blur-sm">
+    <div v-if="!isThumbnail" class="absolute left-2 top-2 z-20 inline-flex items-center gap-2 rounded-lg bg-zinc-950/70 px-2 py-1 text-[11px] text-zinc-100 backdrop-blur-sm">
       <Eye class="h-3 w-3" />
       <span class="font-semibold uppercase tracking-wide">{{ viewport.assignedView === 'threeD' ? '3D' : viewport.assignedView }}</span>
       <span v-if="viewport.assignedView !== 'threeD'" class="text-zinc-300">Slice {{ viewport.sliceIndex }}</span>
     </div>
 
-    <div class="absolute right-2 top-2 z-20">
+    <div v-if="!isThumbnail" class="absolute right-2 top-2 z-20">
       <select
         class="rounded-lg border border-zinc-700 bg-zinc-900/75 px-2 py-1 text-[11px] font-medium text-zinc-100 outline-none"
         :value="viewport.assignedView"
@@ -308,7 +466,9 @@ watch(activeViewportId, (next) => {
       </select>
     </div>
 
+    <!-- 2D Canvas for slice views -->
     <canvas
+      v-show="viewport.assignedView !== 'threeD'"
       ref="canvasRef"
       class="h-full w-full touch-none"
       @wheel="handleWheel"
@@ -317,12 +477,35 @@ watch(activeViewportId, (next) => {
       @pointerup="handlePointerUp"
       @pointercancel="handlePointerUp"
       @pointerleave="handlePointerLeave"
+      @contextmenu.prevent
+    />
+
+    <!-- WebGL Canvas for 3D volume rendering -->
+    <canvas
+      v-show="viewport.assignedView === 'threeD'"
+      ref="canvas3DRef"
+      class="h-full w-full touch-none"
+      @wheel="handleWheel"
+      @pointerdown="handlePointerDown"
+      @pointermove="handlePointerMove"
+      @pointerup="handlePointerUp"
+      @pointercancel="handlePointerUp"
+      @pointerleave="handlePointerLeave"
+      @contextmenu.prevent
     />
 
     <div v-if="showBrushPreview" class="pointer-events-none absolute z-20 rounded-full border-2" :style="brushPreviewStyle" />
 
+    <!-- 3D hint text -->
     <div
-      v-if="viewport.assignedView !== 'threeD' && isPatientLoaded"
+      v-if="viewport.assignedView === 'threeD' && isPatientLoaded && !isThumbnail"
+      class="pointer-events-none absolute bottom-2 left-2 z-20 text-[11px] text-zinc-400/60"
+    >
+      Drag to rotate · Scroll to zoom
+    </div>
+
+    <div
+      v-if="viewport.assignedView !== 'threeD' && isPatientLoaded && !isThumbnail"
       class="absolute bottom-2 left-2 right-2 z-20 rounded-lg bg-zinc-950/70 px-2 py-1.5 backdrop-blur-sm"
     >
       <input
@@ -331,7 +514,7 @@ watch(activeViewportId, (next) => {
         min="0"
         :max="maxSlice"
         :value="viewport.sliceIndex"
-        @input="store.setSlice(viewport.id, Number(($event.target as HTMLInputElement).value))"
+        @input="isFullscreen ? store.setFullscreenSlice(Number(($event.target as HTMLInputElement).value)) : store.setSlice(viewport.id, Number(($event.target as HTMLInputElement).value))"
       />
     </div>
   </article>

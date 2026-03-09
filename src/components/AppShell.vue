@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import { storeToRefs } from 'pinia'
+import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { useViewerStore } from '../stores/viewerStore'
 import AiAssistantPanel from './AiAssistantPanel.vue'
 import LayoutPanel from './LayoutPanel.vue'
 import LayerPanel from './LayerPanel.vue'
@@ -6,6 +10,22 @@ import LeftToolbar from './LeftToolbar.vue'
 import TopHeaderBar from './TopHeaderBar.vue'
 import ToolbarCategoryPanel from './ToolbarCategoryPanel.vue'
 import ViewerGrid from './ViewerGrid.vue'
+
+const store = useViewerStore()
+const { isFullscreenMode } = storeToRefs(store)
+
+const isSidebarOpen = ref(true)
+const sidebarRef = ref<HTMLElement | null>(null)
+
+const toggleSidebar = () => {
+  isSidebarOpen.value = !isSidebarOpen.value
+}
+
+const handleBackdropClick = () => {
+  if (isSidebarOpen.value) {
+    isSidebarOpen.value = false
+  }
+}
 </script>
 
 <template>
@@ -17,12 +37,46 @@ import ViewerGrid from './ViewerGrid.vue'
           <LeftToolbar />
         </div>
 
-        <main class="min-w-0 flex-1 space-y-3">
-          <TopHeaderBar />
+        <main class="min-w-0 flex-1 space-y-3" :class="isFullscreenMode ? 'pr-6' : ''">
+          <TopHeaderBar :compact="isFullscreenMode" />
           <ViewerGrid />
         </main>
 
-        <aside class="w-full space-y-3 md:w-[320px] lg:w-[340px]">
+        <!-- Click-outside backdrop for closing sidebar -->
+        <div
+          v-if="isFullscreenMode && isSidebarOpen"
+          class="fixed inset-0 z-[190]"
+          @click="handleBackdropClick"
+        />
+
+        <!-- Collapsible Sidebar for Fullscreen Mode -->
+        <aside
+          v-if="isFullscreenMode"
+          ref="sidebarRef"
+          class="fixed right-0 top-0 z-[200] flex h-full transition-transform duration-300"
+          :class="isSidebarOpen ? 'translate-x-0' : 'translate-x-[calc(100%-40px)]'"
+        >
+          <!-- Toggle Button -->
+          <button
+            type="button"
+            class="flex h-24 w-10 items-center justify-center self-center rounded-l-xl border-2 border-r-0 shadow-xl transition"
+            :class="isSidebarOpen
+              ? 'border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-100'
+              : 'border-white bg-white text-zinc-900 hover:bg-zinc-100'"
+            @click.stop="toggleSidebar"
+          >
+            <component :is="isSidebarOpen ? ChevronRight : ChevronLeft" class="h-6 w-6" />
+          </button>
+
+          <!-- Sidebar Content -->
+          <div class="h-full w-[320px] space-y-3 overflow-y-auto bg-zinc-50 p-3 shadow-xl lg:w-[340px]" @click.stop>
+            <LayerPanel />
+            <AiAssistantPanel />
+          </div>
+        </aside>
+
+        <!-- Normal Sidebar -->
+        <aside v-else class="w-full space-y-3 md:w-[320px] lg:w-[340px]">
           <LayoutPanel />
           <LayerPanel />
           <AiAssistantPanel />
