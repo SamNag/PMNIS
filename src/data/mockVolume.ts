@@ -75,5 +75,14 @@ export const createMockBrainVolume = (): VolumeData => {
     }
   }
 
-  return { width, height, depth, mri, mask }
+  return {
+    width,
+    height,
+    depth,
+    spacingX: 1,
+    spacingY: 1,
+    spacingZ: 1,
+    mri,
+    mask,
+  }
 }

@@ -74,8 +74,17 @@ export const renderSlice = (
   if (!ctx) return { drawX: 0, drawY: 0, drawW: 0, drawH: 0 }
 
   const { width: sourceWidth, height: sourceHeight } = getSliceSize(view, volume)
-  const baseTransform = getRenderTransform(sourceWidth, sourceHeight, canvas.width, canvas.height, settings)
-  const rotatedTransform = getRenderTransform(sourceHeight, sourceWidth, canvas.width, canvas.height, settings)
+  const spacingX = volume.spacingX ?? 1
+  const spacingY = volume.spacingY ?? 1
+  const spacingZ = volume.spacingZ ?? 1
+
+  const displaySourceWidth =
+    view === 'sagittal' ? sourceWidth * spacingY : sourceWidth * spacingX
+  const displaySourceHeight =
+    view === 'axial' ? sourceHeight * spacingY : sourceHeight * spacingZ
+
+  const baseTransform = getRenderTransform(displaySourceWidth, displaySourceHeight, canvas.width, canvas.height, settings)
+  const rotatedTransform = getRenderTransform(displaySourceHeight, displaySourceWidth, canvas.width, canvas.height, settings)
   const rotatedArea = rotatedTransform.drawW * rotatedTransform.drawH
   const normalArea = baseTransform.drawW * baseTransform.drawH
   const useRotated = rotateToFill && rotatedArea > normalArea * 1.04
@@ -150,7 +159,7 @@ export const renderSlice = (
         const cy = useRotated
           ? transform.drawY + (mark.x / sourceWidth) * transform.drawH
           : transform.drawY + (mark.y / sourceHeight) * transform.drawH
-        const radius = Math.max(mark.radius * radiusScale, 2)
+        const radius = Math.max(mark.radius * radiusScale, 1)
         ctx.moveTo(cx + radius, cy)
         ctx.arc(cx, cy, radius, 0, Math.PI * 2)
       }
@@ -200,15 +209,15 @@ export const screenToSlice = (
     const localX = ((x - transform.drawX) / transform.drawW) * transform.sourceHeight
     const localY = ((y - transform.drawY) / transform.drawH) * transform.sourceWidth
     return {
-      x: clamp(Math.round(localY), 0, transform.sourceWidth - 1),
-      y: clamp(Math.round(transform.sourceHeight - localX - 1), 0, transform.sourceHeight - 1),
+      x: clamp(localY, 0, transform.sourceWidth - 1),
+      y: clamp(transform.sourceHeight - localX - 1, 0, transform.sourceHeight - 1),
     }
   }
 
   const localX = ((x - transform.drawX) / transform.drawW) * sourceWidth
   const localY = ((y - transform.drawY) / transform.drawH) * sourceHeight
   return {
-    x: clamp(Math.round(localX), 0, sourceWidth - 1),
-    y: clamp(Math.round(localY), 0, sourceHeight - 1),
+    x: clamp(localX, 0, sourceWidth - 1),
+    y: clamp(localY, 0, sourceHeight - 1),
   }
 }

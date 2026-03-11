@@ -31,6 +31,9 @@ export interface VolumeData {
   width: number
   height: number
   depth: number
+  spacingX?: number
+  spacingY?: number
+  spacingZ?: number
   mri: Uint8Array
   mask: Uint8Array
 }

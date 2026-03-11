@@ -23,7 +23,6 @@ const {
   showTumorMask,
   compareOverlay,
   isPatientLoaded,
-  layout,
   brushSize,
   activeTool,
   activeLayer,
@@ -74,18 +73,29 @@ const getAnnotationRadius = (): number => {
 }
 
 const previewRadiusPx = computed(() => {
-  if (!volumeData.value || props.viewport.assignedView === 'threeD') return 0
+  if (!volumeData.value || !canvasRef.value || props.viewport.assignedView === 'threeD') return 0
   const { width } = getSliceSize(props.viewport.assignedView, volumeData.value)
+  const pixelRatio = canvasRef.value.clientWidth > 0 ? canvasRef.value.width / canvasRef.value.clientWidth : window.devicePixelRatio || 1
+  const drawWidthCssPx = transformRef.value.drawW / Math.max(pixelRatio, 1)
   const scale =
     transformRef.value.rotated && transformRef.value.sourceHeight
-      ? transformRef.value.drawW / transformRef.value.sourceHeight
-      : transformRef.value.drawW / width
-  return Math.max(3, getAnnotationRadius() * scale)
+      ? drawWidthCssPx / transformRef.value.sourceHeight
+      : drawWidthCssPx / width
+  return Math.max(1, getAnnotationRadius() * scale)
 })
 
 const showBrushPreview = computed(
   () =>
     !!cursorPoint.value &&
+    canAnnotate.value &&
+    activeTool.value === 'brush' &&
+    props.viewport.assignedView !== 'threeD' &&
+    activeViewportId.value === props.viewport.id,
+)
+
+const hideNativeCursor = computed(
+  () =>
+    activeTool.value === 'brush' &&
     canAnnotate.value &&
     props.viewport.assignedView !== 'threeD' &&
     activeViewportId.value === props.viewport.id,
@@ -98,6 +108,7 @@ const brushPreviewStyle = computed(() => {
   return {
     left: `${cursorPoint.value.x}px`,
     top: `${cursorPoint.value.y}px`,
+    transform: 'translate(-50%, -50%)',
     width: `${radius * 2}px`,
     height: `${radius * 2}px`,
     borderColor: color,
@@ -116,7 +127,7 @@ const draw2D = () => {
     renderSettings.value,
     visibleLayers.value,
     showTumorMask.value,
-    layout.value === '3x1',
+    false,
   )
 }
 
@@ -270,6 +281,27 @@ const mapPointerToSlice = (event: PointerEvent): { x: number; y: number; mappedX
   return { x: event.clientX - rect.left, y: event.clientY - rect.top, mappedX: mapped.x, mappedY: mapped.y }
 }
 
+const drawInterpolatedMarks = (
+  view: Exclude<ViewType, 'threeD'>,
+  slice: number,
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  radius: number,
+) => {
+  const deltaX = end.x - start.x
+  const deltaY = end.y - start.y
+  const distance = Math.hypot(deltaX, deltaY)
+  if (distance < 0.01) return
+
+  // Keep overlap between circles high enough so strokes appear continuous.
+  const spacing = Math.max(0.2, radius * 0.3)
+  const stepCount = Math.max(1, Math.ceil(distance / spacing))
+  for (let step = 1; step <= stepCount; step += 1) {
+    const t = step / stepCount
+    store.addAnnotation(view, slice, start.x + deltaX * t, start.y + deltaY * t, radius)
+  }
+}
+
 const drawAtPointer = (event: PointerEvent) => {
   const pointer = mapPointerToSlice(event)
   cursorPoint.value = pointer ? { x: pointer.x, y: pointer.y } : null
@@ -277,20 +309,21 @@ const drawAtPointer = (event: PointerEvent) => {
   if (!pointer || !canAnnotate.value || props.viewport.assignedView === 'threeD') return
 
   const radius = getAnnotationRadius()
-  const spacing = Math.max(1.2, radius * 0.42)
   const view = props.viewport.assignedView as Exclude<ViewType, 'threeD'>
   const lastPoint = lastDrawnPoint.value
 
-  if (
-    lastPoint &&
-    lastPoint.slice === props.viewport.sliceIndex &&
-    lastPoint.view === view &&
-    Math.hypot(lastPoint.x - pointer.mappedX, lastPoint.y - pointer.mappedY) < spacing
-  ) {
-    return
+  if (lastPoint && lastPoint.slice === props.viewport.sliceIndex && lastPoint.view === view) {
+    drawInterpolatedMarks(
+      view,
+      props.viewport.sliceIndex,
+      { x: lastPoint.x, y: lastPoint.y },
+      { x: pointer.mappedX, y: pointer.mappedY },
+      radius,
+    )
+  } else {
+    store.addAnnotation(view, props.viewport.sliceIndex, pointer.mappedX, pointer.mappedY, radius)
   }
 
-  store.addAnnotation(view, props.viewport.sliceIndex, pointer.mappedX, pointer.mappedY, radius)
   lastDrawnPoint.value = {
     x: pointer.mappedX,
     y: pointer.mappedY,
@@ -447,7 +480,7 @@ watch(activeViewportId, (next) => {
 <template>
   <article
     ref="panelRef"
-    class="relative min-h-[240px] overflow-hidden rounded-2xl border bg-zinc-900 shadow-panel transition"
+    class="relative h-full min-h-0 overflow-hidden rounded-2xl border bg-zinc-900 shadow-panel transition"
     :class="isActive ? 'border-zinc-900 ring-2 ring-zinc-300' : 'border-zinc-300'"
   >
     <div v-if="!isThumbnail" class="absolute left-2 top-2 z-20 inline-flex items-center gap-2 rounded-lg bg-zinc-950/70 px-2 py-1 text-[11px] text-zinc-100 backdrop-blur-sm">
@@ -471,6 +504,7 @@ watch(activeViewportId, (next) => {
       v-show="viewport.assignedView !== 'threeD'"
       ref="canvasRef"
       class="h-full w-full touch-none"
+      :class="{ 'cursor-none': hideNativeCursor }"
       @wheel="handleWheel"
       @pointerdown="handlePointerDown"
       @pointermove="handlePointerMove"

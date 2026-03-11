@@ -10,36 +10,28 @@ const { isPatientLoaded, layout, visibleViewports, isFullscreenMode, fullscreenV
 
 const gridClass = computed(() => {
   if (layout.value === '2x2') return 'sm:grid-cols-2 sm:grid-rows-2'
-  if (layout.value === '3x1') return 'lg:grid-cols-3'
-  return 'grid-cols-1'
-})
-
-const sectionClass = computed(() => {
-  if (isFullscreenMode.value) return 'min-h-[calc(100vh-100px)]'
-  if (layout.value === '3x1') return 'min-h-[360px]'
-  return 'min-h-[600px]'
+  if (layout.value === '3x1') return 'lg:grid-cols-3 lg:grid-rows-1'
+  return 'grid-cols-1 grid-rows-1'
 })
 </script>
 
 <template>
   <section
-    class="rounded-2xl border border-zinc-200 bg-zinc-100/55 p-3 shadow-panel"
-    :class="sectionClass"
+    class="h-full min-h-0 overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-100/55 p-3 shadow-panel"
   >
     <EmptyState v-if="!isPatientLoaded" />
 
     <!-- Fullscreen Mode -->
-    <div v-else-if="isFullscreenMode && fullscreenViewportState" class="h-full">
-      <ViewerPanel :viewport="fullscreenViewportState" :is-fullscreen="true" class="h-full" />
+    <div v-else-if="isFullscreenMode && fullscreenViewportState" class="h-full min-h-0">
+      <ViewerPanel :viewport="fullscreenViewportState" :is-fullscreen="true" class="h-full min-h-0" />
     </div>
 
     <!-- Normal Grid Mode -->
-    <div v-else class="grid h-full grid-cols-1 gap-3" :class="gridClass">
-      <ViewerPanel v-for="viewport in visibleViewports" :key="viewport.id" :viewport="viewport" />
+    <div v-else class="grid h-full min-h-0 grid-cols-1 grid-rows-1 gap-3" :class="gridClass">
+      <ViewerPanel v-for="viewport in visibleViewports" :key="viewport.id" :viewport="viewport" class="h-full min-h-0" />
     </div>
   </section>
 </template>
-
 
 
 

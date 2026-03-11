@@ -64,7 +64,7 @@ export const useViewerStore = defineStore('viewer', () => {
   const activeToolbarSection = ref<ToolbarSection>('image')
 
   const renderSettings = ref<RenderSettings>(defaultRenderSettings())
-  const brushSize = ref(6)
+  const brushSize = ref(2.5)
   const showTumorMask = ref(true)
 
   const annotationLayers = ref<AnnotationLayer[]>([])
@@ -164,7 +164,7 @@ export const useViewerStore = defineStore('viewer', () => {
     compareOverlay.value = false
     aiState.value = 'idle'
     aiProgress.value = 0
-    brushSize.value = 6
+    brushSize.value = 2.5
 
     viewports.value = defaultViewports().map((viewport) => {
       if (viewport.assignedView === 'threeD') return viewport
@@ -198,6 +198,7 @@ export const useViewerStore = defineStore('viewer', () => {
       renderSettings.value = defaultRenderSettings()
       annotationLayers.value = []
       activeLayerId.value = null
+      brushSize.value = 2.5
 
       viewports.value = defaultViewports().map((viewport) => {
         if (viewport.assignedView === 'threeD') {
@@ -364,7 +365,8 @@ export const useViewerStore = defineStore('viewer', () => {
   }
 
   const setBrushSize = (value: number) => {
-    brushSize.value = clamp(Math.round(value), 2, 24)
+    const normalized = Math.round((Number.isFinite(value) ? value : brushSize.value) * 10) / 10
+    brushSize.value = clamp(normalized, 0.5, 14)
   }
 
   const createManualLayer = () => {

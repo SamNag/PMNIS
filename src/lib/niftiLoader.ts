@@ -26,6 +26,11 @@ export const loadNiftiFile = async (file: File): Promise<VolumeData> => {
 
   const image = nifti.readImage(header, data)
 
+  const pixDims = (header as { pixDims?: number[] }).pixDims ?? []
+  const spacingX = Number.isFinite(pixDims[1]) && (pixDims[1] ?? 0) > 0 ? pixDims[1]! : 1
+  const spacingY = Number.isFinite(pixDims[2]) && (pixDims[2] ?? 0) > 0 ? pixDims[2]! : 1
+  const spacingZ = Number.isFinite(pixDims[3]) && (pixDims[3] ?? 0) > 0 ? pixDims[3]! : 1
+
   // Get dimensions
   const width = header.dims[1] ?? 1
   const height = header.dims[2] ?? 1
@@ -78,7 +83,15 @@ export const loadNiftiFile = async (file: File): Promise<VolumeData> => {
     mri[i] = clampToByte(normalized)
   }
 
-  return { width, height, depth, mri, mask }
+  return {
+    width,
+    height,
+    depth,
+    spacingX,
+    spacingY,
+    spacingZ,
+    mri,
+    mask,
+  }
 }
-
 

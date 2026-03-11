@@ -1,6 +1,6 @@
 <template>
   <div
-    class="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border border-zinc-200 bg-gradient-to-br from-zinc-100 via-zinc-50 to-white p-8 text-center shadow-panel"
+    class="flex h-full min-h-0 flex-col items-center justify-center rounded-2xl border border-zinc-200 bg-gradient-to-br from-zinc-100 via-zinc-50 to-white p-8 text-center shadow-panel"
   >
     <div class="mb-4 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
       <div class="grid grid-cols-2 gap-2">

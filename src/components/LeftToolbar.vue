@@ -54,6 +54,7 @@ const activeAdjustControl = ref<AdjustControl>('brightness')
 const overlayMode = ref<OverlayMode>(null)
 
 const isManualReady = computed(() => !!activeLayerId.value && isPatientLoaded.value)
+const brushSizeLabel = computed(() => (Number.isInteger(brushSize.value) ? `${brushSize.value}` : brushSize.value.toFixed(1)))
 
 const adjustControlConfig = computed(() => {
   if (activeAdjustControl.value === 'brightness') {
@@ -242,12 +243,12 @@ watch(activeToolbarSection, () => {
       </button>
 
       <template v-if="overlayMode === 'size'">
-        <p class="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Size {{ brushSize }}</p>
+        <p class="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Size {{ brushSizeLabel }}</p>
         <input
           type="range"
-          min="2"
-          max="24"
-          step="1"
+          min="0.5"
+          max="14"
+          step="0.5"
           :disabled="!isManualReady"
           :value="brushSize"
           class="mt-1 w-full accent-zinc-900"

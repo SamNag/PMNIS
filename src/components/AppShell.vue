@@ -15,7 +15,6 @@ const store = useViewerStore()
 const { isFullscreenMode } = storeToRefs(store)
 
 const isSidebarOpen = ref(true)
-const sidebarRef = ref<HTMLElement | null>(null)
 
 const toggleSidebar = () => {
   isSidebarOpen.value = !isSidebarOpen.value
@@ -29,17 +28,17 @@ const handleBackdropClick = () => {
 </script>
 
 <template>
-  <div class="min-h-screen p-3 sm:p-4 lg:p-5">
-    <div class="w-full">
-      <div class="flex flex-col gap-3 md:flex-row">
-        <div class="relative z-[210] space-y-3 md:sticky md:top-4">
+  <div class="h-screen w-full overflow-hidden p-3 sm:p-4 lg:p-5">
+    <div class="h-full w-full">
+      <div class="flex h-full min-h-0 flex-col gap-3 md:flex-row">
+        <div class="relative z-[210] shrink-0 space-y-3">
           <ToolbarCategoryPanel />
           <LeftToolbar />
         </div>
 
-        <main class="min-w-0 flex-1 space-y-3" :class="isFullscreenMode ? 'pr-6' : ''">
+        <main class="min-w-0 flex min-h-0 flex-1 flex-col gap-3" :class="isFullscreenMode ? 'pr-6' : ''">
           <TopHeaderBar :compact="isFullscreenMode" />
-          <ViewerGrid />
+          <ViewerGrid class="min-h-0 flex-1" />
         </main>
 
         <!-- Click-outside backdrop for closing sidebar -->
@@ -52,7 +51,6 @@ const handleBackdropClick = () => {
         <!-- Collapsible Sidebar for Fullscreen Mode -->
         <aside
           v-if="isFullscreenMode"
-          ref="sidebarRef"
           class="fixed right-0 top-0 z-[200] flex h-full transition-transform duration-300"
           :class="isSidebarOpen ? 'translate-x-0' : 'translate-x-[calc(100%-40px)]'"
         >
@@ -76,7 +74,7 @@ const handleBackdropClick = () => {
         </aside>
 
         <!-- Normal Sidebar -->
-        <aside v-else class="w-full space-y-3 md:w-[320px] lg:w-[340px]">
+        <aside v-else class="h-full w-full shrink-0 space-y-3 overflow-y-auto md:w-[320px] lg:w-[340px]">
           <LayoutPanel />
           <LayerPanel />
           <AiAssistantPanel />
