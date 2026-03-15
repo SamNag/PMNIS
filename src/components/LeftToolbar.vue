@@ -25,7 +25,6 @@ import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { useViewerStore } from '../stores/viewerStore'
 import type { ToolId } from '../types/viewer'
-import ToolbarSectionComponent from './ToolbarSection.vue'
 import TooltipIconButton from './TooltipIconButton.vue'
 
 const store = useViewerStore()
@@ -45,7 +44,8 @@ const {
   isFullscreenMode,
 } = storeToRefs(store)
 
-const selectTool = (tool: ToolId, section: 'image' | 'manual' | 'ai') => store.setActiveTool(tool, section)
+// allow selecting tools from the general group without switching the active toolbar section
+const selectTool = (tool: ToolId, section: 'image' | 'manual' | 'ai' | 'general') => store.setActiveTool(tool, section)
 
 type AdjustControl = 'brightness' | 'contrast' | 'threshold'
 type OverlayMode = 'size' | 'adjust' | null
@@ -133,15 +133,23 @@ watch(activeToolbarSection, () => {
 </script>
 
 <template>
-  <aside class="relative z-[220] w-full rounded-2xl border border-zinc-200 bg-zinc-50/70 p-2.5 shadow-panel md:w-[92px]">
-    <div class="space-y-2.5 overflow-visible">
-      <ToolbarSectionComponent v-if="activeToolbarSection === 'image'" title="Image">
-        <TooltipIconButton :icon="ZoomIn" label="Zoom" :active="activeTool === 'zoom'" @click="selectTool('zoom', 'image')" />
-        <TooltipIconButton :icon="Hand" label="Pan" :active="activeTool === 'pan'" @click="selectTool('pan', 'image')" />
-
-        <!-- Divider after Zoom/Pan -->
+  <aside class="relative z-[220] w-full rounded-2xl border border-zinc-200 bg-zinc-50/70 p-2.5 shadow-panel md:w-[92px] overflow-visible">
+    <div class="space-y-2.5 overflow-y-auto overflow-x-hidden">
+      <!-- General controls (no centered title) -->
+      <div class="flex flex-col items-center gap-2">
+        <TooltipIconButton :icon="ZoomIn" label="Zoom" :active="activeTool === 'zoom'" @click="selectTool('zoom', 'general')" />
+        <TooltipIconButton :icon="Hand" label="Pan" :active="activeTool === 'pan'" @click="selectTool('pan', 'general')" />
+        <!-- Divider after Pan (keep exactly one divider here) -->
         <div class="my-1 h-px w-full bg-zinc-200" />
+      </div>
 
+      <!-- Small left-aligned header that reflects the currently active toolbar section -->
+      <p class="px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400 text-center">
+        {{ activeToolbarSection === 'manual' ? 'Manual' : activeToolbarSection === 'ai' ? 'AI' : 'Image' }}
+      </p>
+
+      <!-- Image controls -->
+      <div v-if="activeToolbarSection === 'image'" class="flex flex-col items-center gap-2">
         <TooltipIconButton
           :icon="SunMedium"
           label="Brightness"
@@ -164,21 +172,10 @@ watch(activeToolbarSection, () => {
           @click="openAdjustControl('threshold')"
         />
         <TooltipIconButton :icon="ScanLine" label="Invert" @click="selectTool('invert', 'image')" />
+      </div>
 
-        <!-- Divider before Fit/Reset -->
-        <div class="my-1 h-px w-full bg-zinc-200" />
-
-        <TooltipIconButton
-          :icon="isFullscreenMode ? X : Maximize2"
-          :label="isFullscreenMode ? 'Exit fullscreen' : 'Fullscreen'"
-          :active="isFullscreenMode"
-          :variant="isFullscreenMode ? 'danger' : 'default'"
-          @click="store.toggleFullscreenMode()"
-        />
-        <TooltipIconButton :icon="RotateCcw" label="Reset view" @click="selectTool('reset', 'image')" />
-      </ToolbarSectionComponent>
-
-      <ToolbarSectionComponent v-else-if="activeToolbarSection === 'manual'" title="Manual">
+      <!-- Manual controls -->
+      <div v-else-if="activeToolbarSection === 'manual'" class="flex flex-col items-center gap-2">
         <TooltipIconButton
           :icon="Brush"
           label="Brush"
@@ -196,9 +193,10 @@ watch(activeToolbarSection, () => {
         <TooltipIconButton :icon="Undo2" label="Step back" :disabled="!canUndoManual" @click="store.undoManualEdit()" />
         <TooltipIconButton :icon="Redo2" label="Step front" :disabled="!canRedoManual" @click="store.redoManualEdit()" />
         <TooltipIconButton :icon="Trash2" label="Reset full" :disabled="!isManualReady" @click="store.resetActiveManualLayer()" />
-      </ToolbarSectionComponent>
+      </div>
 
-      <ToolbarSectionComponent v-else-if="activeToolbarSection === 'ai'" title="AI">
+      <!-- AI controls -->
+      <div v-else-if="activeToolbarSection === 'ai'" class="flex flex-col items-center gap-2">
         <TooltipIconButton
           :icon="Bot"
           label="Fully automatic"
@@ -230,8 +228,23 @@ watch(activeToolbarSection, () => {
           :active="compareOverlay"
           @click="store.setCompareOverlay()"
         />
-      </ToolbarSectionComponent>
+      </div>
 
+    </div>
+
+    <!-- Bottom general actions placed after control section so they don't overlap -->
+    <div class="mt-2">
+      <div class="my-1 h-px w-full bg-zinc-200" />
+      <div class="flex flex-col items-center gap-2 mt-2">
+        <TooltipIconButton
+          :icon="isFullscreenMode ? X : Maximize2"
+          :label="isFullscreenMode ? 'Exit fullscreen' : 'Fullscreen'"
+          :active="isFullscreenMode"
+          :variant="isFullscreenMode ? 'danger' : 'default'"
+          @click="store.toggleFullscreenMode()"
+        />
+        <TooltipIconButton :icon="RotateCcw" label="Reset view" @click="selectTool('reset', 'general')" />
+      </div>
     </div>
 
     <div

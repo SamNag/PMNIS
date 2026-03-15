@@ -19,7 +19,7 @@ export type ToolId =
   | 'fill'
   | 'clearSelection'
 
-export type ToolbarSection = 'image' | 'manual' | 'ai'
+export type ToolbarSection = 'image' | 'manual' | 'ai' | 'general'
 
 export type LayerType = 'manual' | 'ai'
 

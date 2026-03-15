@@ -307,7 +307,10 @@ export const useViewerStore = defineStore('viewer', () => {
   }
 
   const setActiveTool = (tool: ToolId, section: ToolbarSection) => {
-    activeToolbarSection.value = section
+    if (section !== 'general') { // Ensure general controls remain consistent
+      activeToolbarSection.value = section;
+    }
+
     if (!instantTools.includes(tool)) {
       activeTool.value = tool
     }
@@ -332,13 +335,16 @@ export const useViewerStore = defineStore('viewer', () => {
     }
   }
 
+  const setActiveToolbarSection = (section: ToolbarSection) => {
+    if (section !== 'general') { // Prevent changing general controls
+      activeToolbarSection.value = section
+    }
+  }
+
   const updateWindowWidth = (delta: number) => {
     renderSettings.value.windowWidth = clamp(renderSettings.value.windowWidth + delta, 40, 480)
   }
 
-  const setActiveToolbarSection = (section: ToolbarSection) => {
-    activeToolbarSection.value = section
-  }
 
   const updateWindowCenter = (delta: number) => {
     renderSettings.value.windowCenter = clamp(renderSettings.value.windowCenter + delta, 20, 220)
