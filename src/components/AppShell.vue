@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useViewerStore } from '../stores/viewerStore'
 import AiAssistantPanel from './AiAssistantPanel.vue'
+import FeedbackPopup from './FeedbackPopup.vue'
 import LayoutPanel from './LayoutPanel.vue'
 import LayerPanel from './LayerPanel.vue'
 import LeftToolbar from './LeftToolbar.vue'
@@ -87,6 +88,11 @@ const handleBackdropClick = () => {
     <!-- Onboarding tutorial overlay -->
     <Teleport to="body">
       <OnboardingTutorial v-if="showTutorial" @close="showTutorial = false" />
+    </Teleport>
+
+    <!-- Feedback popup -->
+    <Teleport to="body">
+      <FeedbackPopup />
     </Teleport>
   </div>
 </template>

@@ -1,4 +1,4 @@
-import type { VolumeData } from '../types/viewer'
+import type { AnnotationLayer, AnnotationMark, VolumeData } from '../types/viewer'
 import { fitCanvasToDevicePixelRatio } from './rendering'
 
 // ─── WebGL Volume Ray Marching ───────────────────────────────────────────────
@@ -21,6 +21,7 @@ precision highp float;
 varying vec2 v_uv;
 
 uniform sampler2D u_volume;
+uniform sampler2D u_mask;
 uniform vec3 u_dims;
 uniform int  u_tilesX;
 uniform vec2 u_atlasSize;
@@ -30,9 +31,23 @@ uniform vec2  u_pan;
 uniform vec2  u_resolution;
 uniform vec3  u_scale;
 uniform float u_isoLevel;
+uniform vec3 u_clip;
+
+vec4 sampleMaskColor(vec3 p) {
+  if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z < 0.0 || p.z > 1.0) return vec4(0.0);
+  if (p.x > u_clip.x || p.y > u_clip.y || p.z > u_clip.z) return vec4(0.0);
+  float slice = p.z * (u_dims.z - 1.0);
+  float s0f = floor(slice + 0.5);
+  float row0 = floor(s0f / float(u_tilesX));
+  float col0 = s0f - row0 * float(u_tilesX);
+  vec2 tileOrigin0 = vec2(col0 * u_dims.x, row0 * u_dims.y);
+  vec2 uv0 = (tileOrigin0 + vec2(p.x * (u_dims.x - 1.0) + 0.5, p.y * (u_dims.y - 1.0) + 0.5)) / u_atlasSize;
+  return texture2D(u_mask, uv0);
+}
 
 float sampleVolume(vec3 p) {
   if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z < 0.0 || p.z > 1.0) return 0.0;
+  if (p.x > u_clip.x || p.y > u_clip.y || p.z > u_clip.z) return 0.0;
 
   float slice = p.z * (u_dims.z - 1.0);
   float s0f = floor(slice);
@@ -74,6 +89,12 @@ vec3 calcNormal(vec3 p) {
   vec3 n = vec3(dx / u_scale.x, dy / u_scale.y, dz / u_scale.z);
   float len = length(n);
   return len > 0.001 ? n / len : vec3(0.0, 1.0, 0.0);
+}
+
+float distToSegment(vec2 p, vec2 a, vec2 b) {
+  vec2 ab = b - a;
+  float t = clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0);
+  return length(p - a - ab * t);
 }
 
 void main() {
@@ -155,6 +176,13 @@ void main() {
     // Blend between outside and inside rendering
     vec3 col = mix(colOut, colIn, inMix);
 
+    // Mask / annotation overlay
+    vec4 maskInfo = sampleMaskColor(sP);
+    if (maskInfo.a > 0.01) {
+      col = mix(col, maskInfo.rgb, 0.55);
+      alpha = max(alpha, 0.06);
+    }
+
     acc.rgb += (1.0 - acc.a) * alpha * col;
     acc.a   += (1.0 - acc.a) * alpha;
 
@@ -162,6 +190,41 @@ void main() {
   }
 
   vec3 finalColor = acc.rgb + (1.0 - acc.a) * bg;
+
+  // ── Axis indicator widget (bottom-left corner) ──
+  vec2 screenPt = v_uv * 2.0 - 1.0;
+  screenPt.x *= aspect;
+  vec2 axC = vec2(-aspect + 0.18, -0.82);
+  float axLen = 0.1;
+  float lineW = 0.005;
+
+  // Volume axes projected to screen: model = transpose(invModel)
+  // M column i (screen xy) = (u_invModel[0][i], u_invModel[1][i])
+  vec2 rawX = vec2(u_invModel[0][0], u_invModel[1][0]);
+  vec2 rawY = vec2(u_invModel[0][1], u_invModel[1][1]);
+  vec2 rawZ = vec2(u_invModel[0][2], u_invModel[1][2]);
+  // Use raw length to show foreshortening when axis points into screen
+  vec2 aX = rawX;
+  vec2 aY = rawY;
+  vec2 aZ = rawZ;
+
+  float dX = distToSegment(screenPt, axC, axC + aX * axLen);
+  float dY = distToSegment(screenPt, axC, axC + aY * axLen);
+  float dZ = distToSegment(screenPt, axC, axC + aZ * axLen);
+
+  finalColor = mix(finalColor, vec3(1.0, 0.25, 0.25), smoothstep(lineW, lineW * 0.3, dX));
+  finalColor = mix(finalColor, vec3(0.25, 1.0, 0.25), smoothstep(lineW, lineW * 0.3, dY));
+  finalColor = mix(finalColor, vec3(0.4, 0.55, 1.0),  smoothstep(lineW, lineW * 0.3, dZ));
+
+  // Axis labels (small dots at endpoints)
+  float dotR = 0.012;
+  float dotX = length(screenPt - (axC + aX * axLen));
+  float dotY = length(screenPt - (axC + aY * axLen));
+  float dotZ = length(screenPt - (axC + aZ * axLen));
+  finalColor = mix(finalColor, vec3(1.0, 0.25, 0.25), smoothstep(dotR, dotR * 0.3, dotX));
+  finalColor = mix(finalColor, vec3(0.25, 1.0, 0.25), smoothstep(dotR, dotR * 0.3, dotY));
+  finalColor = mix(finalColor, vec3(0.4, 0.55, 1.0),  smoothstep(dotR, dotR * 0.3, dotZ));
+
   gl_FragColor = vec4(finalColor, 1.0);
 }
 `
@@ -172,6 +235,8 @@ interface GLState {
   gl: WebGLRenderingContext
   program: WebGLProgram
   volTexture: WebGLTexture
+  maskTexture: WebGLTexture
+  maskVersion: string
   tilesX: number
   atlasW: number
   atlasH: number
@@ -182,6 +247,7 @@ interface GLState {
   locs: {
     a_pos: number
     u_volume: WebGLUniformLocation
+    u_mask: WebGLUniformLocation
     u_dims: WebGLUniformLocation
     u_tilesX: WebGLUniformLocation
     u_atlasSize: WebGLUniformLocation
@@ -191,6 +257,7 @@ interface GLState {
     u_resolution: WebGLUniformLocation
     u_scale: WebGLUniformLocation
     u_isoLevel: WebGLUniformLocation
+    u_clip: WebGLUniformLocation
   }
 }
 
@@ -293,6 +360,163 @@ function buildAtlasTexture(
   return { texture: tex, tilesX, atlasW, atlasH, isoThreshold }
 }
 
+// ─── Mask atlas helpers ──────────────────────────────────────────────────────
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '')
+  return [
+    parseInt(h.substring(0, 2), 16) || 0,
+    parseInt(h.substring(2, 4), 16) || 0,
+    parseInt(h.substring(4, 6), 16) || 0,
+  ]
+}
+
+function pointInPolygon(px: number, py: number, contour: Array<{ x: number; y: number }>): boolean {
+  let inside = false
+  for (let i = 0, j = contour.length - 1; i < contour.length; j = i++) {
+    const xi = contour[i]!.x, yi = contour[i]!.y
+    const xj = contour[j]!.x, yj = contour[j]!.y
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) {
+      inside = !inside
+    }
+  }
+  return inside
+}
+
+function setMaskPixel(
+  pixels: Uint8Array,
+  view: 'axial' | 'coronal' | 'sagittal',
+  slice: number,
+  sx: number,
+  sy: number,
+  r: number,
+  g: number,
+  b: number,
+  W: number,
+  H: number,
+  D: number,
+  tilesX: number,
+  atlasW: number,
+) {
+  let vx: number, vy: number, vz: number
+  if (view === 'axial') {
+    vx = sx; vy = sy; vz = slice
+  } else if (view === 'coronal') {
+    vx = sx; vy = slice; vz = sy
+  } else {
+    vx = slice; vy = sx; vz = sy
+  }
+  if (vx < 0 || vx >= W || vy < 0 || vy >= H || vz < 0 || vz >= D) return
+  const col = vz % tilesX
+  const row = Math.floor(vz / tilesX)
+  const idx = ((row * H + vy) * atlasW + (col * W + vx)) * 4
+  pixels[idx] = r
+  pixels[idx + 1] = g
+  pixels[idx + 2] = b
+  pixels[idx + 3] = (r === 0 && g === 0 && b === 0) ? 0 : 255
+}
+
+function rasterizeMark(
+  pixels: Uint8Array,
+  mark: AnnotationMark,
+  r: number,
+  g: number,
+  b: number,
+  W: number,
+  H: number,
+  D: number,
+  tilesX: number,
+  atlasW: number,
+) {
+  const { view, slice } = mark
+
+  if (mark.contour && mark.contour.length >= 3) {
+    // Rasterize contour polygon
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+    for (const pt of mark.contour) {
+      if (pt.x < minX) minX = pt.x
+      if (pt.x > maxX) maxX = pt.x
+      if (pt.y < minY) minY = pt.y
+      if (pt.y > maxY) maxY = pt.y
+    }
+    const x0 = Math.max(0, Math.floor(minX))
+    const x1 = Math.ceil(maxX)
+    const y0 = Math.max(0, Math.floor(minY))
+    const y1 = Math.ceil(maxY)
+    for (let sy = y0; sy <= y1; sy++) {
+      for (let sx = x0; sx <= x1; sx++) {
+        if (pointInPolygon(sx, sy, mark.contour)) {
+          setMaskPixel(pixels, view, slice, sx, sy, r, g, b, W, H, D, tilesX, atlasW)
+        }
+      }
+    }
+  } else {
+    // Rasterize circle
+    const rad = Math.ceil(mark.radius)
+    const r2 = mark.radius * mark.radius
+    for (let dy = -rad; dy <= rad; dy++) {
+      for (let dx = -rad; dx <= rad; dx++) {
+        if (dx * dx + dy * dy > r2) continue
+        setMaskPixel(pixels, view, slice, Math.round(mark.x) + dx, Math.round(mark.y) + dy, r, g, b, W, H, D, tilesX, atlasW)
+      }
+    }
+  }
+}
+
+function buildMaskAtlasPixels(
+  volume: VolumeData,
+  layers: AnnotationLayer[],
+  showMask: boolean,
+  tilesX: number,
+  atlasW: number,
+  atlasH: number,
+): Uint8Array {
+  const { width: W, height: H, depth: D, mask } = volume
+  const pixels = new Uint8Array(atlasW * atlasH * 4)
+
+  // Base tumor mask (pinkish like 2D overlay)
+  if (showMask) {
+    for (let s = 0; s < D; s++) {
+      const col = s % tilesX
+      const row = Math.floor(s / tilesX)
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          if (mask[s * W * H + y * W + x]! > 0) {
+            const idx = ((row * H + y) * atlasW + (col * W + x)) * 4
+            pixels[idx] = 210
+            pixels[idx + 1] = 52
+            pixels[idx + 2] = 68
+            pixels[idx + 3] = 255
+          }
+        }
+      }
+    }
+  }
+
+  // Annotation layers (with per-layer colors) — add marks first, then erasers
+  for (const layer of layers) {
+    if (!layer.visible) continue
+    const [lr, lg, lb] = hexToRgb(layer.color)
+    for (const mark of layer.annotations) {
+      if (!mark.eraser) rasterizeMark(pixels, mark, lr, lg, lb, W, H, D, tilesX, atlasW)
+    }
+    for (const mark of layer.annotations) {
+      if (mark.eraser) rasterizeMark(pixels, mark, 0, 0, 0, W, H, D, tilesX, atlasW)
+    }
+  }
+
+  return pixels
+}
+
+function computeMaskVersion(layers: AnnotationLayer[], showMask: boolean): string {
+  let v = showMask ? '1' : '0'
+  for (const l of layers) {
+    const eraserCount = l.annotations.filter(m => m.eraser).length
+    v += `|${l.id}:${l.visible ? 1 : 0}:${l.annotations.length}:${eraserCount}`
+  }
+  return v
+}
+
 function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
   const gl = canvas.getContext('webgl', { antialias: false, alpha: false, preserveDrawingBuffer: true })
   if (!gl) return null
@@ -310,6 +534,15 @@ function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
 
   const { texture, tilesX, atlasW, atlasH, isoThreshold } = buildAtlasTexture(gl, volume)
 
+  // Empty mask texture (will be filled on first render)
+  const maskTex = gl.createTexture()!
+  gl.bindTexture(gl.TEXTURE_2D, maskTex)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, atlasW, atlasH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+
   // Full-screen quad
   const posBuf = gl.createBuffer()!
   gl.bindBuffer(gl.ARRAY_BUFFER, posBuf)
@@ -318,6 +551,7 @@ function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
   const locs = {
     a_pos: gl.getAttribLocation(prog, 'a_pos'),
     u_volume: gl.getUniformLocation(prog, 'u_volume')!,
+    u_mask: gl.getUniformLocation(prog, 'u_mask')!,
     u_dims: gl.getUniformLocation(prog, 'u_dims')!,
     u_tilesX: gl.getUniformLocation(prog, 'u_tilesX')!,
     u_atlasSize: gl.getUniformLocation(prog, 'u_atlasSize')!,
@@ -327,10 +561,12 @@ function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
     u_resolution: gl.getUniformLocation(prog, 'u_resolution')!,
     u_scale: gl.getUniformLocation(prog, 'u_scale')!,
     u_isoLevel: gl.getUniformLocation(prog, 'u_isoLevel')!,
+    u_clip: gl.getUniformLocation(prog, 'u_clip')!,
   }
 
   const state: GLState = {
-    gl, program: prog, volTexture: texture, tilesX, atlasW, atlasH,
+    gl, program: prog, volTexture: texture, maskTexture: maskTex, maskVersion: '',
+    tilesX, atlasW, atlasH,
     dims: [volume.width, volume.height, volume.depth],
     dataRef: volume.mri,
     isoThreshold,
@@ -375,6 +611,11 @@ export function renderThreeDVolume(
   zoom: number,
   panX: number,
   panY: number,
+  clipX: number = 1.0,
+  clipY: number = 1.0,
+  clipZ: number = 1.0,
+  layers: AnnotationLayer[] = [],
+  showMask: boolean = false,
 ): void {
   fitCanvasToDevicePixelRatio(canvas)
 
@@ -385,6 +626,7 @@ export function renderThreeDVolume(
     // Clean up old GL resources before rebuilding
     if (state) {
       state.gl.deleteTexture(state.volTexture)
+      state.gl.deleteTexture(state.maskTexture)
       state.gl.deleteBuffer(state.posBuf)
       state.gl.deleteProgram(state.program)
       stateMap.delete(canvas)
@@ -418,6 +660,20 @@ export function renderThreeDVolume(
   gl.bindTexture(gl.TEXTURE_2D, volTexture)
   gl.uniform1i(locs.u_volume, 0)
 
+  // Update mask atlas if annotations changed
+  const mv = computeMaskVersion(layers, showMask)
+  if (mv !== state.maskVersion) {
+    const maskPixels = buildMaskAtlasPixels(volume, layers, showMask, tilesX, atlasW, atlasH)
+    gl.bindTexture(gl.TEXTURE_2D, state.maskTexture)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, atlasW, atlasH, 0, gl.RGBA, gl.UNSIGNED_BYTE, maskPixels)
+    state.maskVersion = mv
+  }
+
+  // Bind mask texture
+  gl.activeTexture(gl.TEXTURE1)
+  gl.bindTexture(gl.TEXTURE_2D, state.maskTexture)
+  gl.uniform1i(locs.u_mask, 1)
+
   gl.uniform3f(locs.u_dims, dims[0], dims[1], dims[2])
   gl.uniform1i(locs.u_tilesX, tilesX)
   gl.uniform2f(locs.u_atlasSize, atlasW, atlasH)
@@ -432,6 +688,7 @@ export function renderThreeDVolume(
   const maxPhys = Math.max(physW, physH, physD)
   gl.uniform3f(locs.u_scale, physW / maxPhys, physH / maxPhys, physD / maxPhys)
   gl.uniform1f(locs.u_isoLevel, isoThreshold)
+  gl.uniform3f(locs.u_clip, clipX, clipY, clipZ)
 
   // Build inverse model (rotation) matrix
   const model = buildRotationMatrix(angleY, angleX)
@@ -449,8 +706,9 @@ export function renderThreeDVolume(
 export function destroyThreeDVolume(canvas: HTMLCanvasElement): void {
   const state = stateMap.get(canvas)
   if (!state) return
-  const { gl, program, volTexture, posBuf } = state
+  const { gl, program, volTexture, maskTexture, posBuf } = state
   gl.deleteTexture(volTexture)
+  gl.deleteTexture(maskTexture)
   gl.deleteBuffer(posBuf)
   gl.deleteProgram(program)
   stateMap.delete(canvas)

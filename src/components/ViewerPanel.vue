@@ -18,6 +18,8 @@ const store = useViewerStore()
 const {
   volumeData,
   activeViewportId,
+  viewports,
+  layout,
   renderSettings,
   annotationLayers,
   showTumorMask,
@@ -35,6 +37,7 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 const canvas3DRef = ref<HTMLCanvasElement | null>(null)
 const panelRef = ref<HTMLDivElement | null>(null)
 const animationFrame = ref<number | null>(null)
+const pendingDrawFrame = ref<number | null>(null)
 const transformRef = ref<RenderTransform>({ drawX: 0, drawY: 0, drawW: 0, drawH: 0 })
 const angleXRef = ref(0)
 const angleYRef = ref(0)
@@ -49,6 +52,44 @@ const isDrawing = ref(false)
 const cursorPoint = ref<{ x: number; y: number } | null>(null)
 const lastDrawnPoint = ref<{ x: number; y: number; slice: number; view: Exclude<ViewType, 'threeD'> } | null>(null)
 let resizeObserver: ResizeObserver | null = null
+
+// Fullscreen 3D clip slider state
+const fsClipAxial = ref(0)
+const fsClipCoronal = ref(0)
+const fsClipSagittal = ref(0)
+
+const maxAxialSlice = computed(() => volumeData.value ? volumeData.value.depth - 1 : 0)
+const maxCoronalSlice = computed(() => volumeData.value ? volumeData.value.height - 1 : 0)
+const maxSagittalSlice = computed(() => volumeData.value ? volumeData.value.width - 1 : 0)
+
+// Show clip sliders when 3D view has no sibling viewports (fullscreen or single view)
+const showClipSliders = computed(() =>
+  props.isFullscreen || (layout.value !== '2x2' && layout.value !== '3x1'),
+)
+
+const clip3D = computed(() => {
+  if (!volumeData.value) return { x: 1, y: 1, z: 1 }
+
+  if (showClipSliders.value && props.viewport.assignedView === 'threeD') {
+    return {
+      x: (fsClipSagittal.value + 1) / volumeData.value.width,
+      y: (fsClipCoronal.value + 1) / volumeData.value.height,
+      z: (fsClipAxial.value + 1) / volumeData.value.depth,
+    }
+  }
+
+  // Multi-viewport mode: read clip positions from other viewports
+  const vps = viewports.value
+  const axialVp = vps.find(vp => vp.assignedView === 'axial')
+  const coronalVp = vps.find(vp => vp.assignedView === 'coronal')
+  const sagittalVp = vps.find(vp => vp.assignedView === 'sagittal')
+
+  return {
+    x: sagittalVp ? (sagittalVp.sliceIndex + 1) / volumeData.value.width : 1,
+    y: coronalVp ? (coronalVp.sliceIndex + 1) / volumeData.value.height : 1,
+    z: axialVp ? (axialVp.sliceIndex + 1) / volumeData.value.depth : 1,
+  }
+})
 
 const isActive = computed(() => activeViewportId.value === props.viewport.id)
 
@@ -142,6 +183,7 @@ const draw2D = () => {
 
 const draw3D = () => {
   if (!canvas3DRef.value || !volumeData.value || props.viewport.assignedView !== 'threeD') return
+  const { x: clipX, y: clipY, z: clipZ } = clip3D.value
   renderThreeDVolume(
     canvas3DRef.value,
     volumeData.value,
@@ -150,6 +192,11 @@ const draw3D = () => {
     zoom3DRef.value,
     pan3DXRef.value,
     pan3DYRef.value,
+    clipX,
+    clipY,
+    clipZ,
+    visibleLayers.value,
+    showTumorMask.value,
   )
 }
 
@@ -183,7 +230,7 @@ const handle3DPointerMove = (event: PointerEvent) => {
   } else if (isPanning.value) {
     // Left button: pan
     pan3DXRef.value += deltaX
-    pan3DYRef.value += deltaY
+    pan3DYRef.value -= deltaY
   }
 
   lastDragPos.value = { x: event.clientX, y: event.clientY }
@@ -203,7 +250,6 @@ const handle3DWheel = (event: WheelEvent) => {
   if (props.viewport.assignedView !== 'threeD') return
   event.preventDefault()
 
-  // Exponential zoom — each scroll step scales by 10 %, no practical upper limit
   const factor = event.deltaY > 0 ? 0.9 : 1 / 0.9
   zoom3DRef.value = Math.max(0.3, Math.min(500, zoom3DRef.value * factor))
   draw3D()
@@ -262,6 +308,15 @@ const draw = () => {
   }
 
   draw2D()
+}
+
+/** Coalesces multiple draw requests into a single requestAnimationFrame. */
+const scheduleDraw = () => {
+  if (pendingDrawFrame.value !== null) return
+  pendingDrawFrame.value = window.requestAnimationFrame(() => {
+    pendingDrawFrame.value = null
+    draw()
+  })
 }
 
 const handleWheel = (event: WheelEvent) => {
@@ -444,7 +499,7 @@ const handleViewAssignment = (event: Event) => {
 onMounted(() => {
   draw()
   if (panelRef.value) {
-    resizeObserver = new ResizeObserver(() => draw())
+    resizeObserver = new ResizeObserver(() => scheduleDraw())
     resizeObserver.observe(panelRef.value)
   }
 })
@@ -452,6 +507,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (resizeObserver && panelRef.value) resizeObserver.unobserve(panelRef.value)
   if (animationFrame.value) window.cancelAnimationFrame(animationFrame.value)
+  if (pendingDrawFrame.value !== null) window.cancelAnimationFrame(pendingDrawFrame.value)
   if (canvas3DRef.value) destroyThreeDVolume(canvas3DRef.value)
   releaseDrawing()
 })
@@ -466,9 +522,27 @@ watch(
     showTumorMask,
     compareOverlay,
     selectedDetectionId,
+    clip3D,
   ],
-  () => draw(),
+  () => scheduleDraw(),
   { deep: true },
+)
+
+// Initialize 3D clip sliders from current viewport positions
+watch(
+  showClipSliders,
+  (show) => {
+    if (show && props.viewport.assignedView === 'threeD' && volumeData.value) {
+      const vps = viewports.value
+      const axialVp = vps.find(vp => vp.assignedView === 'axial')
+      const coronalVp = vps.find(vp => vp.assignedView === 'coronal')
+      const sagittalVp = vps.find(vp => vp.assignedView === 'sagittal')
+      fsClipAxial.value = axialVp?.sliceIndex ?? maxAxialSlice.value
+      fsClipCoronal.value = coronalVp?.sliceIndex ?? maxCoronalSlice.value
+      fsClipSagittal.value = sagittalVp?.sliceIndex ?? maxSagittalSlice.value
+    }
+  },
+  { immediate: true },
 )
 
 watch(
@@ -497,8 +571,8 @@ watch(activeViewportId, (next) => {
 <template>
   <article
     ref="panelRef"
-    class="relative h-full min-h-0 overflow-hidden rounded-2xl border bg-zinc-900 shadow-panel transition"
-    :class="isActive ? 'border-zinc-900 ring-2 ring-zinc-300' : 'border-zinc-300'"
+    class="relative h-full min-h-0 overflow-hidden bg-zinc-900 transition"
+    :class="isActive ? 'ring-2 ring-zinc-300 ring-inset' : ''"
   >
     <div v-if="!isThumbnail" class="absolute left-2 top-2 z-20 inline-flex items-center gap-2 rounded-lg bg-zinc-950/70 px-2 py-1 text-[11px] text-zinc-100 backdrop-blur-sm">
       <Eye class="h-3 w-3" />
@@ -549,12 +623,36 @@ watch(activeViewportId, (next) => {
 
     <!-- 3D hint text -->
     <div
-      v-if="viewport.assignedView === 'threeD' && isPatientLoaded && !isThumbnail"
+      v-if="viewport.assignedView === 'threeD' && isPatientLoaded && !isThumbnail && !showClipSliders"
       class="pointer-events-none absolute bottom-2 left-2 z-20 text-[11px] text-zinc-400/60"
     >
       Drag to pan · Right-click to rotate · Scroll to zoom
     </div>
 
+    <!-- 3D clip sliders (fullscreen or single view) -->
+    <div
+      v-if="viewport.assignedView === 'threeD' && isPatientLoaded && !isThumbnail && showClipSliders"
+      class="absolute bottom-3 right-3 z-20 flex w-56 flex-col gap-1.5 rounded-lg bg-zinc-950/70 px-3 py-2 backdrop-blur-sm"
+    >
+      <div class="flex items-center gap-2">
+        <span class="w-12 text-[10px] font-medium text-zinc-300">Axial</span>
+        <input type="range" class="flex-1 accent-zinc-200" min="0" :max="maxAxialSlice" :value="fsClipAxial" @input="fsClipAxial = Number(($event.target as HTMLInputElement).value)" />
+        <span class="w-6 text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipAxial }}</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-12 text-[10px] font-medium text-zinc-300">Coronal</span>
+        <input type="range" class="flex-1 accent-zinc-200" min="0" :max="maxCoronalSlice" :value="fsClipCoronal" @input="fsClipCoronal = Number(($event.target as HTMLInputElement).value)" />
+        <span class="w-6 text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipCoronal }}</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="w-12 text-[10px] font-medium text-zinc-300">Sagittal</span>
+        <input type="range" class="flex-1 accent-zinc-200" min="0" :max="maxSagittalSlice" :value="fsClipSagittal" @input="fsClipSagittal = Number(($event.target as HTMLInputElement).value)" />
+        <span class="w-6 text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipSagittal }}</span>
+      </div>
+      <div class="pointer-events-none text-[9px] text-zinc-500">Drag to pan · Right-click to rotate · Scroll to zoom</div>
+    </div>
+
+    <!-- 2D slice slider -->
     <div
       v-if="viewport.assignedView !== 'threeD' && isPatientLoaded && !isThumbnail"
       class="absolute bottom-2 left-2 right-2 z-20 rounded-lg bg-zinc-950/70 px-2 py-1.5 backdrop-blur-sm"

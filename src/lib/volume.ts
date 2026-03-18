@@ -13,14 +13,14 @@ export const getSliceSize = (
 }
 
 export const getViewMaxSlice = (view: ViewType, volume: VolumeData): number => {
-  if (view === 'axial') return volume.depth - 1
+  if (view === 'axial' || view === 'threeD') return volume.depth - 1
   if (view === 'coronal') return volume.height - 1
   if (view === 'sagittal') return volume.width - 1
   return 0
 }
 
 export const getDefaultSliceForView = (view: ViewType, volume: VolumeData): number =>
-  Math.floor(getViewMaxSlice(view, volume) / 2)
+  view === 'threeD' ? getViewMaxSlice(view, volume) : Math.floor(getViewMaxSlice(view, volume) / 2)
 
 export const readVoxelByView = (
   view: Exclude<ViewType, 'threeD'>,

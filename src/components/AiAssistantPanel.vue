@@ -10,7 +10,6 @@ const {
   aiState,
   aiProgress,
   canRunAi,
-  selectedLayerHasSelection,
   compareOverlay,
   aiDetections,
   selectedDetectionId,
@@ -62,10 +61,7 @@ const confidenceClass = (confidence: number) => {
         Full mode analyzes the complete scan. Results are final and cannot be edited.
       </template>
       <template v-else>
-        Semi mode detects suspicious areas for review. You can accept, reject, or refine each finding by drawing in all three axes.
-        <span :class="selectedLayerHasSelection ? 'text-emerald-600' : 'text-amber-600'">
-          {{ selectedLayerHasSelection ? 'Selection detected.' : 'Draw a region first.' }}
-        </span>
+        Semi mode detects suspicious areas for review. You can accept, reject, or refine each finding by editing boundaries in all three axes.
       </template>
     </p>
 

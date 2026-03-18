@@ -143,103 +143,139 @@ export const renderSlice = (
     ctx.drawImage(offscreen, transform.drawX, transform.drawY, transform.drawW, transform.drawH)
   }
 
-  for (const layer of layers.filter((entry) => entry.visible)) {
-    const marks = getSliceFromLayer(layer, view, sliceIndex)
-    if (!marks.length) continue
+  // Helper: map slice-space mark to canvas coordinates
+  const markToCx = (mark: { x: number; y: number }) =>
+    useRotated
+      ? transform.drawX + ((sourceHeight - mark.y - 1) / sourceHeight) * transform.drawW
+      : transform.drawX + (mark.x / sourceWidth) * transform.drawW
+  const markToCy = (mark: { x: number; y: number }) =>
+    useRotated
+      ? transform.drawY + (mark.x / sourceWidth) * transform.drawH
+      : transform.drawY + (mark.y / sourceHeight) * transform.drawH
+  const toCanvasX = (px: number) =>
+    useRotated
+      ? transform.drawX + ((sourceHeight - px) / sourceHeight) * transform.drawW
+      : transform.drawX + (px / sourceWidth) * transform.drawW
+  const toCanvasY = (py: number) =>
+    useRotated
+      ? transform.drawY + (py / sourceWidth) * transform.drawH
+      : transform.drawY + (py / sourceHeight) * transform.drawH
 
-    const radiusScale = useRotated ? transform.drawW / sourceHeight : transform.drawW / sourceWidth
+  const drawAddMarks = (
+    target: CanvasRenderingContext2D,
+    marks: typeof layers[0]['annotations'],
+    layer: AnnotationLayer,
+    radiusScale: number,
+    isHighlighted: boolean,
+  ) => {
+    const addMarks = marks.filter((m) => !m.eraser)
+    if (!addMarks.length) return
 
     if (layer.type === 'manual') {
-      // Render a single filled path so brush strokes keep a uniform opacity without ring artifacts.
-      ctx.fillStyle = `${layer.color}99`
-      ctx.beginPath()
-      for (const mark of marks) {
-        const cx = useRotated
-          ? transform.drawX + ((sourceHeight - mark.y - 1) / sourceHeight) * transform.drawW
-          : transform.drawX + (mark.x / sourceWidth) * transform.drawW
-        const cy = useRotated
-          ? transform.drawY + (mark.x / sourceWidth) * transform.drawH
-          : transform.drawY + (mark.y / sourceHeight) * transform.drawH
+      target.fillStyle = `${layer.color}99`
+      target.beginPath()
+      for (const mark of addMarks) {
+        const cx = markToCx(mark)
+        const cy = markToCy(mark)
         const radius = Math.max(mark.radius * radiusScale, 1)
-        ctx.moveTo(cx + radius, cy)
-        ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+        target.moveTo(cx + radius, cy)
+        target.arc(cx, cy, radius, 0, Math.PI * 2)
       }
-      ctx.fill()
-      continue
+      target.fill()
+      return
     }
 
-    const isHighlighted = layer.id === highlightLayerId
-    for (const mark of marks) {
-      // Helper to map a slice-space point to canvas coordinates.
-      const toCanvasX = (px: number) =>
-        useRotated
-          ? transform.drawX + ((sourceHeight - px) / sourceHeight) * transform.drawW
-          : transform.drawX + (px / sourceWidth) * transform.drawW
-      const toCanvasY = (py: number) =>
-        useRotated
-          ? transform.drawY + (py / sourceWidth) * transform.drawH
-          : transform.drawY + (py / sourceHeight) * transform.drawH
-
-      // If a contour polygon is available, draw it; otherwise fall back to a circle.
+    for (const mark of addMarks) {
       if (mark.contour && mark.contour.length > 1) {
         const buildPath = () => {
-          ctx.beginPath()
+          target.beginPath()
           const first = mark.contour![0]!
-          // For rotated view the x/y swap must mirror what circle rendering does:
-          // circle cx uses mark.y, cy uses mark.x — contour coords follow the same space.
-          ctx.moveTo(
+          target.moveTo(
             useRotated ? toCanvasX(first.y) : toCanvasX(first.x),
             useRotated ? toCanvasY(first.x) : toCanvasY(first.y),
           )
           for (let i = 1; i < mark.contour!.length; i++) {
             const pt = mark.contour![i]!
-            ctx.lineTo(
+            target.lineTo(
               useRotated ? toCanvasX(pt.y) : toCanvasX(pt.x),
               useRotated ? toCanvasY(pt.x) : toCanvasY(pt.y),
             )
           }
-          ctx.closePath()
+          target.closePath()
         }
-
         if (isHighlighted) {
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)'
-          ctx.lineWidth = 5
+          target.strokeStyle = 'rgba(255, 255, 255, 0.35)'
+          target.lineWidth = 5
           buildPath()
-          ctx.stroke()
+          target.stroke()
         }
-
-        ctx.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
-        ctx.strokeStyle = layer.color
-        ctx.lineWidth = isHighlighted ? 2.5 : 1.5
+        target.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
+        target.strokeStyle = layer.color
+        target.lineWidth = isHighlighted ? 2.5 : 1.5
         buildPath()
-        ctx.fill()
-        ctx.stroke()
+        target.fill()
+        target.stroke()
       } else {
-        // Fallback: plain circle (manual brush marks added to AI layers during editing).
-        const cx = useRotated
-          ? transform.drawX + ((sourceHeight - mark.y - 1) / sourceHeight) * transform.drawW
-          : transform.drawX + (mark.x / sourceWidth) * transform.drawW
-        const cy = useRotated
-          ? transform.drawY + (mark.x / sourceWidth) * transform.drawH
-          : transform.drawY + (mark.y / sourceHeight) * transform.drawH
+        const cx = markToCx(mark)
+        const cy = markToCy(mark)
         const radius = mark.radius * radiusScale
-
         if (isHighlighted) {
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)'
-          ctx.lineWidth = 5
-          ctx.beginPath()
-          ctx.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
-          ctx.stroke()
+          target.strokeStyle = 'rgba(255, 255, 255, 0.35)'
+          target.lineWidth = 5
+          target.beginPath()
+          target.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
+          target.stroke()
         }
-
-        ctx.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
-        ctx.strokeStyle = layer.color
-        ctx.lineWidth = isHighlighted ? 2.5 : 1.5
-        ctx.beginPath()
-        ctx.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
-        ctx.fill()
-        ctx.stroke()
+        target.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
+        target.strokeStyle = layer.color
+        target.lineWidth = isHighlighted ? 2.5 : 1.5
+        target.beginPath()
+        target.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
+        target.fill()
+        target.stroke()
       }
+    }
+  }
+
+  const drawEraserMarks = (
+    target: CanvasRenderingContext2D,
+    marks: typeof layers[0]['annotations'],
+    radiusScale: number,
+  ) => {
+    const eraseMarks = marks.filter((m) => m.eraser)
+    if (!eraseMarks.length) return
+    target.globalCompositeOperation = 'destination-out'
+    target.beginPath()
+    for (const mark of eraseMarks) {
+      const cx = markToCx(mark)
+      const cy = markToCy(mark)
+      const radius = Math.max(mark.radius * radiusScale, 1)
+      target.moveTo(cx + radius, cy)
+      target.arc(cx, cy, radius, 0, Math.PI * 2)
+    }
+    target.fill()
+    target.globalCompositeOperation = 'source-over'
+  }
+
+  for (const layer of layers.filter((entry) => entry.visible)) {
+    const marks = getSliceFromLayer(layer, view, sliceIndex)
+    if (!marks.length) continue
+
+    const radiusScale = useRotated ? transform.drawW / sourceHeight : transform.drawW / sourceWidth
+    const isHighlighted = layer.id === highlightLayerId
+    const hasErasers = marks.some((m) => m.eraser)
+
+    if (hasErasers) {
+      // Use offscreen canvas so eraser compositing doesn't affect the background
+      const tmp = document.createElement('canvas')
+      tmp.width = canvas.width
+      tmp.height = canvas.height
+      const tCtx = tmp.getContext('2d')!
+      drawAddMarks(tCtx, marks, layer, radiusScale, isHighlighted)
+      drawEraserMarks(tCtx, marks, radiusScale)
+      ctx.drawImage(tmp, 0, 0)
+    } else {
+      drawAddMarks(ctx, marks, layer, radiusScale, isHighlighted)
     }
   }
 

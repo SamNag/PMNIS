@@ -11,7 +11,11 @@ import type {
   AiState,
   AnnotationLayer,
   AnnotationMark,
+  EditAcceptAnswer,
+  FeedbackEntry,
+  FeedbackPopupState,
   LayoutMode,
+  RejectReason,
   RenderSettings,
   ToolId,
   ToolbarSection,
@@ -153,6 +157,12 @@ export const useViewerStore = defineStore('viewer', () => {
   const editingDetectionId = ref<string | null>(null)
   /** Mode that was active when AI was last run (controls whether editing is allowed). */
   const aiRunMode = ref<AiMode | null>(null)
+
+  // ── Feedback ──
+  const feedbackPopup = ref<FeedbackPopupState>({ visible: false, type: 'full-auto-rating' })
+  const feedbackEntries = ref<FeedbackEntry[]>([])
+  /** Timer handle for the delayed full-auto feedback popup. */
+  let fullAutoFeedbackTimer: ReturnType<typeof setTimeout> | null = null
   const activeViewport = computed<ViewportState | null>(
     () => viewports.value.find((viewport) => viewport.id === activeViewportId.value) ?? viewports.value[0] ?? null,
   )
@@ -185,7 +195,6 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const canRunAi = computed(() => {
     if (!isPatientLoaded.value || aiState.value === 'running') return false
-    if (aiMode.value === 'semi') return !!activeLayer.value && selectedLayerHasSelection.value
     return true
   })
 
@@ -342,19 +351,19 @@ export const useViewerStore = defineStore('viewer', () => {
   const setFullscreenView = (view: ViewType) => {
     if (!isFullscreenMode.value || !fullscreenViewportState.value) return
     fullscreenViewportState.value.assignedView = view
-    if (volumeData.value && view !== 'threeD') {
+    if (volumeData.value) {
       fullscreenViewportState.value.sliceIndex = getDefaultSliceForView(view, volumeData.value)
     }
   }
 
   const setFullscreenSlice = (value: number) => {
-    if (!fullscreenViewportState.value || !volumeData.value || fullscreenViewportState.value.assignedView === 'threeD') return
+    if (!fullscreenViewportState.value || !volumeData.value) return
     const maxSlice = getViewMaxSlice(fullscreenViewportState.value.assignedView, volumeData.value)
     fullscreenViewportState.value.sliceIndex = Math.max(0, Math.min(maxSlice, value))
   }
 
   const updateFullscreenSlice = (delta: number) => {
-    if (!fullscreenViewportState.value || !volumeData.value || fullscreenViewportState.value.assignedView === 'threeD') return
+    if (!fullscreenViewportState.value || !volumeData.value) return
     const maxSlice = getViewMaxSlice(fullscreenViewportState.value.assignedView, volumeData.value)
     fullscreenViewportState.value.sliceIndex = Math.max(0, Math.min(maxSlice, fullscreenViewportState.value.sliceIndex + delta))
   }
@@ -367,7 +376,7 @@ export const useViewerStore = defineStore('viewer', () => {
     const viewport = activeViewport.value
     if (!viewport) return
     viewport.assignedView = view
-    if (volumeData.value && view !== 'threeD') {
+    if (volumeData.value) {
       viewport.sliceIndex = getDefaultSliceForView(view, volumeData.value)
     }
   }
@@ -376,14 +385,14 @@ export const useViewerStore = defineStore('viewer', () => {
     const viewport = viewports.value.find((entry) => entry.id === viewportId)
     if (!viewport) return
     viewport.assignedView = view
-    if (volumeData.value && view !== 'threeD') {
+    if (volumeData.value) {
       viewport.sliceIndex = getDefaultSliceForView(view, volumeData.value)
     }
   }
 
   const updateSlice = (viewportId: string, delta: number) => {
     const viewport = viewports.value.find((entry) => entry.id === viewportId)
-    if (!viewport || !volumeData.value || viewport.assignedView === 'threeD') return
+    if (!viewport || !volumeData.value) return
 
     const maxSlice = getViewMaxSlice(viewport.assignedView, volumeData.value)
     viewport.sliceIndex = Math.max(0, Math.min(maxSlice, viewport.sliceIndex + delta))
@@ -391,7 +400,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const setSlice = (viewportId: string, value: number) => {
     const viewport = viewports.value.find((entry) => entry.id === viewportId)
-    if (!viewport || !volumeData.value || viewport.assignedView === 'threeD') return
+    if (!viewport || !volumeData.value) return
 
     const maxSlice = getViewMaxSlice(viewport.assignedView, volumeData.value)
     viewport.sliceIndex = Math.max(0, Math.min(maxSlice, value))
@@ -548,10 +557,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!canAnnotate.value || !activeLayer.value) return
 
     if (activeTool.value === 'eraser') {
-      activeLayer.value.annotations = activeLayer.value.annotations.filter(
-        (mark) =>
-          !(mark.view === view && mark.slice === slice && Math.hypot(mark.x - x, mark.y - y) <= mark.radius + radius),
-      )
+      activeLayer.value.annotations.push({ view, slice, x, y, radius, eraser: true })
       return
     }
 
@@ -598,8 +604,14 @@ export const useViewerStore = defineStore('viewer', () => {
   const acceptDetection = (detectionId: string) => {
     const detection = aiDetections.value.find((d) => d.id === detectionId)
     if (!detection) return
+    const wasEdited = detection.wasEdited ?? false
     detection.status = 'accepted'
     if (editingDetectionId.value === detectionId) editingDetectionId.value = null
+
+    // In semi-auto mode, if the user edited this detection before accepting, ask about the edit
+    if (aiRunMode.value === 'semi' && wasEdited) {
+      showFeedbackPopup('semi-edit-accept', detection.id, detection.name)
+    }
   }
 
   const rejectDetection = (detectionId: string) => {
@@ -610,6 +622,11 @@ export const useViewerStore = defineStore('viewer', () => {
     const layer = annotationLayers.value.find((l) => l.id === detection.layerId)
     if (layer) layer.visible = false
     if (selectedDetectionId.value === detectionId) selectedDetectionId.value = null
+
+    // In semi-auto mode, ask the user why they rejected this detection
+    if (aiRunMode.value === 'semi') {
+      showFeedbackPopup('semi-reject-reason', detection.id, detection.name)
+    }
   }
 
   const editDetection = (detectionId: string) => {
@@ -618,6 +635,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
     selectDetection(detectionId)
     editingDetectionId.value = detectionId
+    detection.wasEdited = true
     activeTool.value = 'brush'
     activeToolbarSection.value = 'manual'
   }
@@ -763,6 +781,66 @@ export const useViewerStore = defineStore('viewer', () => {
     }
 
     aiState.value = 'success'
+
+    // In full-auto mode, schedule the feedback popup after a delay
+    // so the user has time to examine the results first
+    if (aiRunMode.value === 'full') {
+      scheduleFullAutoFeedback()
+    }
+  }
+
+  // ── Feedback actions ──
+
+  const showFeedbackPopup = (type: FeedbackPopupState['type'], detectionId?: string, detectionName?: string) => {
+    feedbackPopup.value = { visible: true, type, detectionId, detectionName }
+  }
+
+  const dismissFeedback = () => {
+    feedbackPopup.value = { ...feedbackPopup.value, visible: false }
+  }
+
+  const submitFullAutoRating = (rating: number) => {
+    feedbackEntries.value.push({
+      id: makeId('fb'),
+      timestamp: Date.now(),
+      type: 'full-auto-rating',
+      rating,
+    })
+    dismissFeedback()
+  }
+
+  const submitRejectReason = (reason: RejectReason, comment?: string) => {
+    feedbackEntries.value.push({
+      id: makeId('fb'),
+      timestamp: Date.now(),
+      type: 'semi-reject-reason',
+      rejectReason: reason,
+      rejectComment: comment,
+      detectionId: feedbackPopup.value.detectionId,
+      detectionName: feedbackPopup.value.detectionName,
+    })
+    dismissFeedback()
+  }
+
+  const submitEditAcceptAnswer = (answer: EditAcceptAnswer) => {
+    feedbackEntries.value.push({
+      id: makeId('fb'),
+      timestamp: Date.now(),
+      type: 'semi-edit-accept',
+      editAcceptAnswer: answer,
+      detectionId: feedbackPopup.value.detectionId,
+      detectionName: feedbackPopup.value.detectionName,
+    })
+    dismissFeedback()
+  }
+
+  const scheduleFullAutoFeedback = () => {
+    if (fullAutoFeedbackTimer) clearTimeout(fullAutoFeedbackTimer)
+    // Delay so the user has time to examine the results first
+    fullAutoFeedbackTimer = setTimeout(() => {
+      showFeedbackPopup('full-auto-rating')
+      fullAutoFeedbackTimer = null
+    }, 5000)
   }
 
   return {
@@ -844,5 +922,11 @@ export const useViewerStore = defineStore('viewer', () => {
     rejectAi,
     acceptAi,
     runAi,
+    feedbackPopup,
+    feedbackEntries,
+    dismissFeedback,
+    submitFullAutoRating,
+    submitRejectReason,
+    submitEditAcceptAnswer,
   }
 })

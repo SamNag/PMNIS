@@ -17,7 +17,7 @@ const gridClass = computed(() => {
 
 <template>
   <section
-    class="h-full min-h-0 overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-100/55 p-3 shadow-panel"
+    class="h-full min-h-0 overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-500 shadow-panel"
     data-tutorial="viewer-grid"
   >
     <EmptyState v-if="!isPatientLoaded" />
@@ -28,7 +28,7 @@ const gridClass = computed(() => {
     </div>
 
     <!-- Normal Grid Mode -->
-    <div v-else class="grid h-full min-h-0 grid-cols-1 grid-rows-1 gap-3" :class="gridClass">
+    <div v-else class="grid h-full min-h-0 grid-cols-1 grid-rows-1 gap-[1px]" :class="gridClass">
       <ViewerPanel v-for="viewport in visibleViewports" :key="viewport.id" :viewport="viewport" class="h-full min-h-0" />
     </div>
   </section>

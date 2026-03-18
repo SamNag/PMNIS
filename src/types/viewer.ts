@@ -61,6 +61,8 @@ export interface AnnotationMark {
   radius: number
   /** Irregular contour polygon for AI detections (slice-space coordinates). */
   contour?: Array<{ x: number; y: number }>
+  /** When true, this mark erases (subtracts) from the annotation area. */
+  eraser?: boolean
 }
 
 export interface AnnotationLayer {
@@ -97,4 +99,46 @@ export interface AiDetection {
   status: DetectionStatus
   layerId: string
   color: string
+  /** Whether the user edited this detection before accepting. */
+  wasEdited?: boolean
+}
+
+// ── Feedback ──
+
+export type FeedbackType = 'full-auto-rating' | 'semi-reject-reason' | 'semi-edit-accept'
+
+export interface FeedbackPopupState {
+  visible: boolean
+  type: FeedbackType
+  /** Related detection id (for semi-auto feedback). */
+  detectionId?: string
+  detectionName?: string
+}
+
+export type RejectReason =
+  | 'false-positive'
+  | 'wrong-boundary'
+  | 'wrong-label'
+  | 'other'
+
+export type EditAcceptAnswer =
+  | 'ai-too-big'
+  | 'ai-missed-area'
+  | 'both'
+  | 'minor-adjustment'
+
+export interface FeedbackEntry {
+  id: string
+  timestamp: number
+  type: FeedbackType
+  /** Star rating 0.5–5 for full-auto mode. */
+  rating?: number
+  /** Reason for rejecting a detection. */
+  rejectReason?: RejectReason
+  rejectComment?: string
+  /** Answer about edit nature. */
+  editAcceptAnswer?: EditAcceptAnswer
+  /** Related detection id. */
+  detectionId?: string
+  detectionName?: string
 }
