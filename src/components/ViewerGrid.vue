@@ -18,6 +18,7 @@ const gridClass = computed(() => {
 <template>
   <section
     class="h-full min-h-0 overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-100/55 p-3 shadow-panel"
+    data-tutorial="viewer-grid"
   >
     <EmptyState v-if="!isPatientLoaded" />
 

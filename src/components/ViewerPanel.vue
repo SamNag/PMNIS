@@ -27,6 +27,8 @@ const {
   activeTool,
   activeLayer,
   canAnnotate,
+  aiDetections,
+  selectedDetectionId,
 } = storeToRefs(store)
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -60,6 +62,12 @@ const availableViews: Array<{ key: ViewType; label: string }> = [
 const visibleLayers = computed(() => {
   if (compareOverlay.value) return annotationLayers.value.filter((layer) => layer.type === 'ai')
   return annotationLayers.value
+})
+
+const highlightLayerId = computed(() => {
+  if (!selectedDetectionId.value) return undefined
+  const detection = aiDetections.value.find((d) => d.id === selectedDetectionId.value)
+  return detection?.layerId
 })
 
 const maxSlice = computed(() => {
@@ -128,6 +136,7 @@ const draw2D = () => {
     visibleLayers.value,
     showTumorMask.value,
     false,
+    highlightLayerId.value,
   )
 }
 
@@ -150,25 +159,32 @@ const handle3DPointerDown = (event: PointerEvent) => {
   activeMouseButton.value = event.button
   lastDragPos.value = { x: event.clientX, y: event.clientY }
   canvas3DRef.value?.setPointerCapture(event.pointerId)
-  // In 3D, "pan" means rotating/grabbing the model
-  // Left button (0): Rotate
-  // Right button (2): Rotate (same as pan in 3D context)
-  // Pan tool + left button: Rotate
-  // All drag actions rotate the 3D model
-  isDragging3D.value = true
+
+  if (event.button === 2) {
+    // Right button: rotate
+    isDragging3D.value = true
+  } else {
+    // Left button: pan
+    isPanning.value = true
+  }
 }
 
 const handle3DPointerMove = (event: PointerEvent) => {
-  if (!isDragging3D.value || !lastDragPos.value || props.viewport.assignedView !== 'threeD') return
+  if ((!isDragging3D.value && !isPanning.value) || !lastDragPos.value || props.viewport.assignedView !== 'threeD') return
 
   const deltaX = event.clientX - lastDragPos.value.x
   const deltaY = event.clientY - lastDragPos.value.y
 
-  // Rotate the 3D view (grab and rotate)
-  angleYRef.value += deltaX * 0.01
-  angleXRef.value += deltaY * 0.01
-  // Clamp X rotation to prevent flipping
-  angleXRef.value = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, angleXRef.value))
+  if (isDragging3D.value) {
+    // Right button: rotate
+    angleYRef.value += deltaX * 0.01
+    angleXRef.value += deltaY * 0.01
+    angleXRef.value = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, angleXRef.value))
+  } else if (isPanning.value) {
+    // Left button: pan
+    pan3DXRef.value += deltaX
+    pan3DYRef.value += deltaY
+  }
 
   lastDragPos.value = { x: event.clientX, y: event.clientY }
   draw3D()
@@ -187,9 +203,9 @@ const handle3DWheel = (event: WheelEvent) => {
   if (props.viewport.assignedView !== 'threeD') return
   event.preventDefault()
 
-  // Zoom in/out
-  const zoomDelta = event.deltaY > 0 ? -0.1 : 0.1
-  zoom3DRef.value = Math.max(0.3, Math.min(5, zoom3DRef.value + zoomDelta))
+  // Exponential zoom — each scroll step scales by 10 %, no practical upper limit
+  const factor = event.deltaY > 0 ? 0.9 : 1 / 0.9
+  zoom3DRef.value = Math.max(0.3, Math.min(500, zoom3DRef.value * factor))
   draw3D()
 }
 
@@ -449,6 +465,7 @@ watch(
     annotationLayers,
     showTumorMask,
     compareOverlay,
+    selectedDetectionId,
   ],
   () => draw(),
   { deep: true },
@@ -535,7 +552,7 @@ watch(activeViewportId, (next) => {
       v-if="viewport.assignedView === 'threeD' && isPatientLoaded && !isThumbnail"
       class="pointer-events-none absolute bottom-2 left-2 z-20 text-[11px] text-zinc-400/60"
     >
-      Drag to rotate · Scroll to zoom
+      Drag to pan · Right-click to rotate · Scroll to zoom
     </div>
 
     <div

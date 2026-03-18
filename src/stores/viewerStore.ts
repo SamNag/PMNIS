@@ -6,6 +6,7 @@ import { makeId } from '../lib/ids'
 import { loadNiftiFile } from '../lib/niftiLoader'
 import { getDefaultSliceForView, getViewMaxSlice } from '../lib/volume'
 import type {
+  AiDetection,
   AiMode,
   AiState,
   AnnotationLayer,
@@ -26,6 +27,77 @@ const MAX_HISTORY_SIZE = 80
 const colors = ['#f97316', '#06b6d4', '#f43f5e', '#22c55e', '#8b5cf6', '#0ea5e9', '#eab308']
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 const cloneAnnotations = (marks: AnnotationMark[]): AnnotationMark[] => marks.map((mark) => ({ ...mark }))
+const detectionColors = ['#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899']
+
+/** Deterministic organic noise for contour deformation. */
+const contourNoise = (theta: number, sliceOffset: number, seed: number): number =>
+  Math.sin(theta * 2.3 + seed * 1.7 + sliceOffset * 0.3) * 0.14 +
+  Math.sin(theta * 5.1 + seed * 3.2 - sliceOffset * 0.7) * 0.08 +
+  Math.cos(theta * 3.7 + seed * 0.9 + sliceOffset * 0.5) * 0.10 +
+  Math.sin(theta * 7.9 - seed * 2.1 + sliceOffset * 0.15) * 0.05
+
+/** Generate an irregular closed polygon contour around a center point. */
+const generateContour = (
+  cx: number,
+  cy: number,
+  baseRadius: number,
+  sliceOffset: number,
+  seed: number,
+  numPoints = 36,
+): Array<{ x: number; y: number }> => {
+  const points: Array<{ x: number; y: number }> = []
+  for (let i = 0; i < numPoints; i++) {
+    const theta = (i / numPoints) * Math.PI * 2
+    const r = baseRadius * (1 + contourNoise(theta, sliceOffset, seed))
+    points.push({ x: cx + r * Math.cos(theta), y: cy + r * Math.sin(theta) })
+  }
+  return points
+}
+
+/** Build contour-based annotations for an irregular 3-D detection region. */
+const generateIrregularAnnotations = (
+  cx: number,
+  cy: number,
+  cz: number,
+  radius: number,
+  volume: VolumeData,
+  seed: number,
+): AnnotationMark[] => {
+  const marks: AnnotationMark[] = []
+  const r = Math.ceil(radius)
+
+  // Axial slices (z-axis)
+  for (let dz = -r; dz <= r; dz++) {
+    const z = Math.round(cz) + dz
+    if (z < 0 || z >= volume.depth) continue
+    const cr = Math.sqrt(Math.max(0, radius * radius - dz * dz))
+    if (cr < 1) continue
+    const contour = generateContour(cx, cy, cr, dz, seed)
+    marks.push({ view: 'axial', slice: z, x: cx, y: cy, radius: cr, contour })
+  }
+
+  // Coronal slices (y-axis)
+  for (let dy = -r; dy <= r; dy++) {
+    const y = Math.round(cy) + dy
+    if (y < 0 || y >= volume.height) continue
+    const cr = Math.sqrt(Math.max(0, radius * radius - dy * dy))
+    if (cr < 1) continue
+    const contour = generateContour(cx, cz, cr, dy, seed + 100)
+    marks.push({ view: 'coronal', slice: y, x: cx, y: cz, radius: cr, contour })
+  }
+
+  // Sagittal slices (x-axis)
+  for (let dx = -r; dx <= r; dx++) {
+    const x = Math.round(cx) + dx
+    if (x < 0 || x >= volume.width) continue
+    const cr = Math.sqrt(Math.max(0, radius * radius - dx * dx))
+    if (cr < 1) continue
+    const contour = generateContour(cy, cz, cr, dx, seed + 200)
+    marks.push({ view: 'sagittal', slice: x, x: cy, y: cz, radius: cr, contour })
+  }
+
+  return marks
+}
 
 const defaultRenderSettings = (): RenderSettings => ({
   zoom: 1,
@@ -76,6 +148,11 @@ export const useViewerStore = defineStore('viewer', () => {
   const aiState = ref<AiState>('idle')
   const aiProgress = ref(0)
   const compareOverlay = ref(false)
+  const aiDetections = ref<AiDetection[]>([])
+  const selectedDetectionId = ref<string | null>(null)
+  const editingDetectionId = ref<string | null>(null)
+  /** Mode that was active when AI was last run (controls whether editing is allowed). */
+  const aiRunMode = ref<AiMode | null>(null)
   const activeViewport = computed<ViewportState | null>(
     () => viewports.value.find((viewport) => viewport.id === activeViewportId.value) ?? viewports.value[0] ?? null,
   )
@@ -92,29 +169,35 @@ export const useViewerStore = defineStore('viewer', () => {
     return activeViewport.value ? [activeViewport.value] : []
   })
 
-  const canAnnotate = computed(
-    () =>
-      isPatientLoaded.value &&
-      manualTools.includes(activeTool.value) &&
-      !!activeLayer.value &&
-      activeLayer.value.type === 'manual',
-  )
+  const isLayerEditable = (layer: AnnotationLayer): boolean => {
+    if (layer.type === 'manual') return true
+    if (layer.type === 'ai' && editingDetectionId.value) {
+      const detection = aiDetections.value.find((d) => d.id === editingDetectionId.value)
+      return !!detection && detection.layerId === layer.id && detection.status !== 'rejected'
+    }
+    return false
+  }
+
+  const canAnnotate = computed(() => {
+    if (!isPatientLoaded.value || !manualTools.includes(activeTool.value) || !activeLayer.value) return false
+    return isLayerEditable(activeLayer.value)
+  })
 
   const canRunAi = computed(() => {
-    if (!isPatientLoaded.value || !activeLayer.value || aiState.value === 'running') return false
-    if (aiMode.value === 'semi') return selectedLayerHasSelection.value
+    if (!isPatientLoaded.value || aiState.value === 'running') return false
+    if (aiMode.value === 'semi') return !!activeLayer.value && selectedLayerHasSelection.value
     return true
   })
 
   const canUndoManual = computed(() => {
     const layer = activeLayer.value
-    if (!layer || layer.type !== 'manual') return false
+    if (!layer || !isLayerEditable(layer)) return false
     return (manualHistory.value[layer.id]?.length ?? 0) > 0
   })
 
   const canRedoManual = computed(() => {
     const layer = activeLayer.value
-    if (!layer || layer.type !== 'manual') return false
+    if (!layer || !isLayerEditable(layer)) return false
     return (manualFuture.value[layer.id]?.length ?? 0) > 0
   })
 
@@ -137,7 +220,7 @@ export const useViewerStore = defineStore('viewer', () => {
   }
 
   const pushManualHistorySnapshot = (layer: AnnotationLayer) => {
-    if (layer.type !== 'manual') return
+    if (!isLayerEditable(layer)) return
     const history = getManualHistoryBucket(layer.id)
     history.push(cloneAnnotations(layer.annotations))
     if (history.length > MAX_HISTORY_SIZE) {
@@ -165,6 +248,10 @@ export const useViewerStore = defineStore('viewer', () => {
     aiState.value = 'idle'
     aiProgress.value = 0
     brushSize.value = 2.5
+    aiDetections.value = []
+    selectedDetectionId.value = null
+    editingDetectionId.value = null
+    aiRunMode.value = null
 
     viewports.value = defaultViewports().map((viewport) => {
       if (viewport.assignedView === 'threeD') return viewport
@@ -199,6 +286,10 @@ export const useViewerStore = defineStore('viewer', () => {
       annotationLayers.value = []
       activeLayerId.value = null
       brushSize.value = 2.5
+      aiDetections.value = []
+      selectedDetectionId.value = null
+      editingDetectionId.value = null
+      aiRunMode.value = null
 
       viewports.value = defaultViewports().map((viewport) => {
         if (viewport.assignedView === 'threeD') {
@@ -412,7 +503,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const beginManualEdit = () => {
     const layer = activeLayer.value
-    if (!layer || layer.type !== 'manual') return
+    if (!layer || !isLayerEditable(layer)) return
     pushManualHistorySnapshot(layer)
   }
 
@@ -422,7 +513,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const undoManualEdit = () => {
     const layer = activeLayer.value
-    if (!layer || layer.type !== 'manual') return
+    if (!layer || !isLayerEditable(layer)) return
     const history = getManualHistoryBucket(layer.id)
     const future = getManualFutureBucket(layer.id)
     if (!history.length) return
@@ -432,7 +523,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const redoManualEdit = () => {
     const layer = activeLayer.value
-    if (!layer || layer.type !== 'manual') return
+    if (!layer || !isLayerEditable(layer)) return
     const future = getManualFutureBucket(layer.id)
     const history = getManualHistoryBucket(layer.id)
     if (!future.length) return
@@ -442,7 +533,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const resetActiveManualLayer = () => {
     const layer = activeLayer.value
-    if (!layer || layer.type !== 'manual' || !layer.annotations.length) return
+    if (!layer || !isLayerEditable(layer) || !layer.annotations.length) return
     pushManualHistorySnapshot(layer)
     layer.annotations = []
   }
@@ -475,21 +566,106 @@ export const useViewerStore = defineStore('viewer', () => {
     compareOverlay.value = !compareOverlay.value
   }
 
+  const selectDetection = (detectionId: string) => {
+    const detection = aiDetections.value.find((d) => d.id === detectionId)
+    if (!detection || !volumeData.value) return
+
+    selectedDetectionId.value = detectionId
+    editingDetectionId.value = null
+    activeLayerId.value = detection.layerId
+
+    for (const vp of viewports.value) {
+      if (vp.assignedView === 'axial') {
+        const max = getViewMaxSlice('axial', volumeData.value)
+        vp.sliceIndex = Math.max(0, Math.min(max, Math.round(detection.centerZ)))
+      } else if (vp.assignedView === 'coronal') {
+        const max = getViewMaxSlice('coronal', volumeData.value)
+        vp.sliceIndex = Math.max(0, Math.min(max, Math.round(detection.centerY)))
+      } else if (vp.assignedView === 'sagittal') {
+        const max = getViewMaxSlice('sagittal', volumeData.value)
+        vp.sliceIndex = Math.max(0, Math.min(max, Math.round(detection.centerX)))
+      }
+    }
+
+    if (fullscreenViewportState.value) {
+      const fsView = fullscreenViewportState.value.assignedView
+      if (fsView === 'axial') fullscreenViewportState.value.sliceIndex = Math.round(detection.centerZ)
+      else if (fsView === 'coronal') fullscreenViewportState.value.sliceIndex = Math.round(detection.centerY)
+      else if (fsView === 'sagittal') fullscreenViewportState.value.sliceIndex = Math.round(detection.centerX)
+    }
+  }
+
+  const acceptDetection = (detectionId: string) => {
+    const detection = aiDetections.value.find((d) => d.id === detectionId)
+    if (!detection) return
+    detection.status = 'accepted'
+    if (editingDetectionId.value === detectionId) editingDetectionId.value = null
+  }
+
+  const rejectDetection = (detectionId: string) => {
+    const detection = aiDetections.value.find((d) => d.id === detectionId)
+    if (!detection) return
+    detection.status = 'rejected'
+    if (editingDetectionId.value === detectionId) editingDetectionId.value = null
+    const layer = annotationLayers.value.find((l) => l.id === detection.layerId)
+    if (layer) layer.visible = false
+    if (selectedDetectionId.value === detectionId) selectedDetectionId.value = null
+  }
+
+  const editDetection = (detectionId: string) => {
+    const detection = aiDetections.value.find((d) => d.id === detectionId)
+    if (!detection || detection.status === 'rejected') return
+
+    selectDetection(detectionId)
+    editingDetectionId.value = detectionId
+    activeTool.value = 'brush'
+    activeToolbarSection.value = 'manual'
+  }
+
+  const acceptAllDetections = () => {
+    for (const det of aiDetections.value) {
+      if (det.status === 'pending') det.status = 'accepted'
+    }
+    editingDetectionId.value = null
+  }
+
+  const rejectAllDetections = () => {
+    for (const det of aiDetections.value) {
+      if (det.status === 'pending') {
+        det.status = 'rejected'
+        const layer = annotationLayers.value.find((l) => l.id === det.layerId)
+        if (layer) layer.visible = false
+      }
+    }
+    selectedDetectionId.value = null
+    editingDetectionId.value = null
+  }
+
   const rejectAi = () => {
     aiState.value = 'rejected'
     aiProgress.value = 0
     annotationLayers.value = annotationLayers.value.filter((layer) => layer.type !== 'ai')
+    aiDetections.value = []
+    selectedDetectionId.value = null
+    editingDetectionId.value = null
+    aiRunMode.value = null
   }
 
   const acceptAi = () => {
     aiState.value = 'success'
+    acceptAllDetections()
   }
 
   const runAi = async (mode: 'run' | 'refine') => {
     if (!canRunAi.value || !volumeData.value) return
 
+    aiRunMode.value = aiMode.value
     aiState.value = 'running'
     aiProgress.value = 0
+    aiDetections.value = []
+    selectedDetectionId.value = null
+    editingDetectionId.value = null
+    annotationLayers.value = annotationLayers.value.filter((l) => l.type !== 'ai')
 
     await new Promise<void>((resolve) => {
       const timer = window.setInterval(() => {
@@ -501,47 +677,91 @@ export const useViewerStore = defineStore('viewer', () => {
       }, 75)
     })
 
-    const aiLayer: AnnotationLayer = {
-      id: makeId('ai'),
-      name: mode === 'run' ? 'AI Tumor Proposal' : 'AI Refined Proposal',
-      type: 'ai',
-      visible: true,
-      color: '#ef4444',
-      annotations: [],
+    const vol = volumeData.value
+    const isRefine = mode === 'refine'
+
+    const rawDetections = [
+      {
+        name: 'Primary Tumor',
+        label: 'Tumor',
+        confidence: isRefine ? 0.97 : 0.94,
+        cx: vol.width * 0.62,
+        cy: vol.height * 0.46,
+        cz: vol.depth * 0.52,
+        radius: isRefine ? vol.width * 0.09 : vol.width * 0.1,
+        seed: 42,
+      },
+      {
+        name: 'Perilesional Edema',
+        label: 'Edema',
+        confidence: isRefine ? 0.87 : 0.82,
+        cx: vol.width * 0.57,
+        cy: vol.height * 0.5,
+        cz: vol.depth * 0.52,
+        radius: isRefine ? vol.width * 0.05 : vol.width * 0.06,
+        seed: 137,
+      },
+      {
+        name: 'Secondary Lesion',
+        label: 'Lesion',
+        confidence: isRefine ? 0.71 : 0.67,
+        cx: vol.width * 0.35,
+        cy: vol.height * 0.41,
+        cz: vol.depth * 0.58,
+        radius: isRefine ? vol.width * 0.035 : vol.width * 0.04,
+        seed: 271,
+      },
+      {
+        name: 'Possible Artifact',
+        label: 'Artifact',
+        confidence: isRefine ? 0.45 : 0.41,
+        cx: vol.width * 0.5,
+        cy: vol.height * 0.24,
+        cz: vol.depth * 0.76,
+        radius: isRefine ? vol.width * 0.025 : vol.width * 0.03,
+        seed: 389,
+      },
+    ]
+
+    const newDetections: AiDetection[] = []
+
+    for (let i = 0; i < rawDetections.length; i++) {
+      const raw = rawDetections[i]!
+      const layerId = makeId('ai')
+      const color = detectionColors[i % detectionColors.length]!
+
+      const layer: AnnotationLayer = {
+        id: layerId,
+        name: raw.name,
+        type: 'ai',
+        visible: true,
+        color,
+        annotations: generateIrregularAnnotations(raw.cx, raw.cy, raw.cz, raw.radius, vol, raw.seed),
+      }
+
+      annotationLayers.value.unshift(layer)
+
+      newDetections.push({
+        id: makeId('det'),
+        name: raw.name,
+        label: raw.label,
+        confidence: raw.confidence,
+        centerX: raw.cx,
+        centerY: raw.cy,
+        centerZ: raw.cz,
+        radius: raw.radius,
+        status: 'pending',
+        layerId,
+        color,
+      })
     }
 
-    const centerX = Math.floor(volumeData.value.width * 0.62)
-    const centerY = Math.floor(volumeData.value.height * 0.46)
-    const centerZ = Math.floor(volumeData.value.depth * 0.52)
+    aiDetections.value = newDetections
 
-    for (let i = 0; i < 16; i += 1) {
-      const jitter = (Math.random() - 0.5) * 12
-      aiLayer.annotations.push({
-        view: 'axial',
-        slice: centerZ + Math.round((Math.random() - 0.5) * 8),
-        x: centerX + jitter,
-        y: centerY + jitter * 0.6,
-        radius: mode === 'run' ? 8 : 6,
-      })
-      aiLayer.annotations.push({
-        view: 'coronal',
-        slice: centerY + Math.round((Math.random() - 0.5) * 8),
-        x: centerX + jitter * 0.8,
-        y: centerZ + jitter * 0.5,
-        radius: mode === 'run' ? 7 : 5,
-      })
-      aiLayer.annotations.push({
-        view: 'sagittal',
-        slice: centerX + Math.round((Math.random() - 0.5) * 8),
-        x: centerY + jitter,
-        y: centerZ + jitter * 0.4,
-        radius: mode === 'run' ? 7 : 5,
-      })
+    if (newDetections.length > 0) {
+      selectDetection(newDetections[0]!.id)
     }
 
-    annotationLayers.value = annotationLayers.value.filter((layer) => layer.type !== 'ai')
-    annotationLayers.value.unshift(aiLayer)
-    activeLayerId.value = aiLayer.id
     aiState.value = 'success'
   }
 
@@ -575,6 +795,10 @@ export const useViewerStore = defineStore('viewer', () => {
     aiState,
     aiProgress,
     compareOverlay,
+    aiDetections,
+    selectedDetectionId,
+    editingDetectionId,
+    aiRunMode,
     canRunAi,
     loadPatient,
     loadNiftiPatient,
@@ -611,6 +835,12 @@ export const useViewerStore = defineStore('viewer', () => {
     addAnnotation,
     setAiMode,
     setCompareOverlay,
+    selectDetection,
+    acceptDetection,
+    rejectDetection,
+    editDetection,
+    acceptAllDetections,
+    rejectAllDetections,
     rejectAi,
     acceptAi,
     runAi,

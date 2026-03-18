@@ -28,6 +28,8 @@ uniform mat4 u_invModel;
 uniform float u_zoom;
 uniform vec2  u_pan;
 uniform vec2  u_resolution;
+uniform vec3  u_scale;
+uniform float u_isoLevel;
 
 float sampleVolume(vec3 p) {
   if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z < 0.0 || p.z > 1.0) return 0.0;
@@ -40,7 +42,7 @@ float sampleVolume(vec3 p) {
   float row0 = floor(s0f / float(u_tilesX));
   float col0 = s0f - row0 * float(u_tilesX);
   vec2 tileOrigin0 = vec2(col0 * u_dims.x, row0 * u_dims.y);
-  vec2 uv0 = (tileOrigin0 + vec2(p.x * u_dims.x, p.y * u_dims.y)) / u_atlasSize;
+  vec2 uv0 = (tileOrigin0 + vec2(p.x * (u_dims.x - 1.0) + 0.5, p.y * (u_dims.y - 1.0) + 0.5)) / u_atlasSize;
   float v0 = texture2D(u_volume, uv0).r;
 
   if (s1f >= u_dims.z) return v0;
@@ -48,15 +50,15 @@ float sampleVolume(vec3 p) {
   float row1 = floor(s1f / float(u_tilesX));
   float col1 = s1f - row1 * float(u_tilesX);
   vec2 tileOrigin1 = vec2(col1 * u_dims.x, row1 * u_dims.y);
-  vec2 uv1 = (tileOrigin1 + vec2(p.x * u_dims.x, p.y * u_dims.y)) / u_atlasSize;
+  vec2 uv1 = (tileOrigin1 + vec2(p.x * (u_dims.x - 1.0) + 0.5, p.y * (u_dims.y - 1.0) + 0.5)) / u_atlasSize;
   float v1 = texture2D(u_volume, uv1).r;
 
   return mix(v0, v1, frac);
 }
 
-vec2 intersectBox(vec3 ro, vec3 rd) {
-  vec3 tmin = (vec3(0.0) - ro) / rd;
-  vec3 tmax = (vec3(1.0) - ro) / rd;
+vec2 intersectBox(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax) {
+  vec3 tmin = (bmin - ro) / rd;
+  vec3 tmax = (bmax - ro) / rd;
   vec3 t1 = min(tmin, tmax);
   vec3 t2 = max(tmin, tmax);
   float tNear = max(max(t1.x, t1.y), t1.z);
@@ -69,7 +71,7 @@ vec3 calcNormal(vec3 p) {
   float dx = sampleVolume(p + vec3(e,0,0)) - sampleVolume(p - vec3(e,0,0));
   float dy = sampleVolume(p + vec3(0,e,0)) - sampleVolume(p - vec3(0,e,0));
   float dz = sampleVolume(p + vec3(0,0,e)) - sampleVolume(p - vec3(0,0,e));
-  vec3 n = vec3(dx, dy, dz);
+  vec3 n = vec3(dx / u_scale.x, dy / u_scale.y, dz / u_scale.z);
   float len = length(n);
   return len > 0.001 ? n / len : vec3(0.0, 1.0, 0.0);
 }
@@ -79,64 +81,87 @@ void main() {
   float aspect = u_resolution.x / u_resolution.y;
   uv.x *= aspect;
 
-  uv = uv / u_zoom - u_pan / u_resolution * 2.0;
+  // Split zoom: FOV narrows via sqrt, camera approaches via sqrt
+  // so total magnification = zoom, but camera enters volume at high zoom
+  float fovZ = sqrt(max(u_zoom, 1.0));
+  float camDist = 2.2 / fovZ;
 
-  vec3 ro = vec3(0.0, 0.0, 2.2);
+  uv = uv / fovZ - u_pan / u_resolution * 2.0;
+
+  vec3 ro = vec3(0.0, 0.0, camDist);
   vec3 rd = normalize(vec3(uv, -1.8));
 
   ro = (u_invModel * vec4(ro, 1.0)).xyz + 0.5;
   rd = normalize((u_invModel * vec4(rd, 0.0)).xyz);
 
-  vec2 tHit = intersectBox(ro, rd);
+  vec3 boxMin = 0.5 - u_scale * 0.5;
+  vec3 boxMax = 0.5 + u_scale * 0.5;
+  vec2 tHit = intersectBox(ro, rd, boxMin, boxMax);
+
+  vec3 bg = mix(vec3(0.07, 0.07, 0.08), vec3(0.11, 0.11, 0.12), v_uv.y);
+
   if (tHit.x > tHit.y) {
-    gl_FragColor = vec4(0.07, 0.07, 0.08, 1.0);
+    gl_FragColor = vec4(bg, 1.0);
     return;
   }
 
+  // Camera may be inside the volume — start from 0 in that case
   tHit.x = max(tHit.x, 0.0);
 
-  // Use constant loop bound for WebGL 1.0 compatibility
   float totalDist = tHit.y - tHit.x;
-  float stepSize = totalDist / 256.0;
-  vec4 accum = vec4(0.0);
-  vec3 lightDir = normalize(vec3(0.4, 0.7, 0.6));
-  vec3 lightDir2 = normalize(vec3(-0.3, -0.2, -0.8));
+  float dt = totalDist / 256.0;
+  vec4 acc = vec4(0.0);
+
+  vec3 L1 = normalize(vec3(0.4, 0.7, 0.6));
+  vec3 L2 = normalize(vec3(-0.3, -0.2, -0.8));
+
+  float lo = u_isoLevel;
+  float loHalf = lo * 0.5;
+
+  // Transition: 0 = outside (solid Phong surface), 1 = inside (raw grayscale)
+  float inMix = smoothstep(4.0, 25.0, u_zoom);
+  // Reduce opacity with zoom so deeper tissue layers are visible
+  float opScale = 1.0 / max(sqrt(u_zoom * 0.5), 1.0);
 
   for (int i = 0; i < 256; i++) {
-    float t = tHit.x + float(i) * stepSize;
+    float t = tHit.x + float(i) * dt;
     if (t > tHit.y) break;
 
     vec3 p = ro + rd * t;
-    float val = sampleVolume(p);
+    vec3 sP = (p - boxMin) / u_scale;
+    float val = sampleVolume(sP);
 
-    if (val < 0.04) continue;
+    if (val < loHalf) continue;
 
-    // Transfer function: map MRI intensity to opacity and colour
-    float opacity = smoothstep(0.04, 0.25, val) * 0.12;
+    // Transfer function — steep at surface, moderate inside
+    float alpha = smoothstep(loHalf, lo * 1.5, val) * 0.09;
+    alpha += smoothstep(lo * 1.5, 0.55, val) * 0.05;
+    alpha += smoothstep(0.55, 0.9, val) * 0.12;
+    alpha *= opScale;
 
-    // Boost opacity for brighter structures (bone, white matter)
-    opacity += smoothstep(0.5, 0.9, val) * 0.15;
+    // Phong-shaded color (outside view)
+    vec3 n = calcNormal(sP);
+    float d1 = max(dot(n, L1), 0.0);
+    float d2 = max(dot(n, L2), 0.0);
+    vec3 hv = normalize(L1 - rd);
+    float sc = pow(max(dot(n, hv), 0.0), 32.0) * 0.3;
+    float lit = 0.3 + d1 * 0.55 + d2 * 0.2 + sc;
+    float bri = 0.35 + 0.65 * smoothstep(loHalf, 0.85, val);
+    vec3 colOut = vec3(bri * 0.92, bri * 0.89, bri * 0.84) * lit;
 
-    // Phong shading with two lights
-    vec3 n = calcNormal(p);
-    float diffuse1 = max(dot(n, lightDir), 0.0) * 0.7; // Increased diffuse lighting
-    float diffuse2 = max(dot(n, lightDir2), 0.0) * 0.5; // Increased secondary light contribution
-    float ambient = 0.5; // Increased ambient light for better visibility
-    float spec = pow(max(dot(reflect(-lightDir, n), -rd), 0.0), 16.0) * 0.2;
-    float lighting = ambient + diffuse1 + diffuse2 + spec;
+    // Raw grayscale MRI color (inside view — matches 2D slice detail)
+    vec3 colIn = vec3(val);
 
-    // Warm-tinted grayscale for a more natural look
-    vec3 color = vec3(val * lighting * 1.0, val * lighting * 0.97, val * lighting * 0.93);
+    // Blend between outside and inside rendering
+    vec3 col = mix(colOut, colIn, inMix);
 
-    accum.rgb += (1.0 - accum.a) * opacity * color;
-    accum.a   += (1.0 - accum.a) * opacity;
+    acc.rgb += (1.0 - acc.a) * alpha * col;
+    acc.a   += (1.0 - acc.a) * alpha;
 
-    if (accum.a > 0.97) break;
+    if (acc.a > 0.97) break;
   }
 
-  vec3 bg = mix(vec3(0.07, 0.07, 0.08), vec3(0.11, 0.11, 0.12), v_uv.y);
-  vec3 finalColor = accum.rgb + (1.0 - accum.a) * bg;
-
+  vec3 finalColor = acc.rgb + (1.0 - acc.a) * bg;
   gl_FragColor = vec4(finalColor, 1.0);
 }
 `
@@ -151,6 +176,8 @@ interface GLState {
   atlasW: number
   atlasH: number
   dims: [number, number, number]
+  dataRef: Uint8Array
+  isoThreshold: number
   posBuf: WebGLBuffer
   locs: {
     a_pos: number
@@ -162,6 +189,8 @@ interface GLState {
     u_zoom: WebGLUniformLocation
     u_pan: WebGLUniformLocation
     u_resolution: WebGLUniformLocation
+    u_scale: WebGLUniformLocation
+    u_isoLevel: WebGLUniformLocation
   }
 }
 
@@ -177,10 +206,51 @@ function compileShader(gl: WebGLRenderingContext, src: string, type: number) {
   return s
 }
 
+/** Compute an iso-surface threshold using Otsu's method on the volume data. */
+function computeIsoThreshold(mri: Uint8Array, maxVal: number): number {
+  if (maxVal === 0) return 0.12
+
+  // Build histogram in atlas-normalised space (same values the shader sees)
+  const hist = new Uint32Array(256)
+  for (let i = 0; i < mri.length; i++) {
+    hist[Math.min(255, Math.round(((mri[i] ?? 0) / maxVal) * 255))]!++
+  }
+
+  // Otsu's method – find the threshold that maximises inter-class variance
+  const total = mri.length
+  let sum = 0
+  for (let i = 0; i < 256; i++) sum += i * hist[i]!
+
+  let sumB = 0
+  let wB = 0
+  let maxVar = 0
+  let best = 0
+
+  for (let i = 0; i < 256; i++) {
+    wB += hist[i]!
+    if (wB === 0) continue
+    const wF = total - wB
+    if (wF === 0) break
+
+    sumB += i * hist[i]!
+    const diff = sumB / wB - (sum - sumB) / wF
+    const v = wB * wF * diff * diff
+
+    if (v > maxVar) {
+      maxVar = v
+      best = i
+    }
+  }
+
+  // Use 50 % of Otsu threshold so the surface captures the tissue
+  // boundary rather than the midpoint between background and bright tissue.
+  return Math.max(0.02, Math.min(0.4, (best * 0.5) / 255))
+}
+
 function buildAtlasTexture(
   gl: WebGLRenderingContext,
   volume: VolumeData,
-): { texture: WebGLTexture; tilesX: number; atlasW: number; atlasH: number } {
+): { texture: WebGLTexture; tilesX: number; atlasW: number; atlasH: number; isoThreshold: number } {
   const { width: W, height: H, depth: D, mri } = volume
 
   // Find max for normalisation
@@ -219,7 +289,8 @@ function buildAtlasTexture(
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, atlasW, atlasH, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, pixels)
 
-  return { texture: tex, tilesX, atlasW, atlasH }
+  const isoThreshold = computeIsoThreshold(mri, maxVal)
+  return { texture: tex, tilesX, atlasW, atlasH, isoThreshold }
 }
 
 function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
@@ -237,7 +308,7 @@ function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
     return null
   }
 
-  const { texture, tilesX, atlasW, atlasH } = buildAtlasTexture(gl, volume)
+  const { texture, tilesX, atlasW, atlasH, isoThreshold } = buildAtlasTexture(gl, volume)
 
   // Full-screen quad
   const posBuf = gl.createBuffer()!
@@ -254,11 +325,15 @@ function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
     u_zoom: gl.getUniformLocation(prog, 'u_zoom')!,
     u_pan: gl.getUniformLocation(prog, 'u_pan')!,
     u_resolution: gl.getUniformLocation(prog, 'u_resolution')!,
+    u_scale: gl.getUniformLocation(prog, 'u_scale')!,
+    u_isoLevel: gl.getUniformLocation(prog, 'u_isoLevel')!,
   }
 
   const state: GLState = {
     gl, program: prog, volTexture: texture, tilesX, atlasW, atlasH,
     dims: [volume.width, volume.height, volume.depth],
+    dataRef: volume.mri,
+    isoThreshold,
     posBuf, locs,
   }
   stateMap.set(canvas, state)
@@ -305,9 +380,15 @@ export function renderThreeDVolume(
 
   let state = stateMap.get(canvas) ?? null
 
-  // Re-init if volume dimensions changed or first call
-  if (!state || state.dims[0] !== volume.width || state.dims[1] !== volume.height || state.dims[2] !== volume.depth) {
-    // Destroy old context by getting a fresh one
+  // Re-init if volume data or dimensions changed
+  if (!state || state.dims[0] !== volume.width || state.dims[1] !== volume.height || state.dims[2] !== volume.depth || state.dataRef !== volume.mri) {
+    // Clean up old GL resources before rebuilding
+    if (state) {
+      state.gl.deleteTexture(state.volTexture)
+      state.gl.deleteBuffer(state.posBuf)
+      state.gl.deleteProgram(state.program)
+      stateMap.delete(canvas)
+    }
     state = initGL(canvas, volume)
   }
 
@@ -324,7 +405,7 @@ export function renderThreeDVolume(
     return
   }
 
-  const { gl, program, volTexture, locs, posBuf, tilesX, atlasW, atlasH, dims } = state
+  const { gl, program, volTexture, locs, posBuf, tilesX, atlasW, atlasH, dims, isoThreshold } = state
 
   gl.viewport(0, 0, canvas.width, canvas.height)
   gl.clearColor(0.07, 0.07, 0.08, 1)
@@ -343,6 +424,14 @@ export function renderThreeDVolume(
   gl.uniform1f(locs.u_zoom, zoom)
   gl.uniform2f(locs.u_pan, panX, panY)
   gl.uniform2f(locs.u_resolution, canvas.width, canvas.height)
+
+  // Physical proportions: account for voxel count and spacing per axis
+  const physW = volume.width * (volume.spacingX ?? 1)
+  const physH = volume.height * (volume.spacingY ?? 1)
+  const physD = volume.depth * (volume.spacingZ ?? 1)
+  const maxPhys = Math.max(physW, physH, physD)
+  gl.uniform3f(locs.u_scale, physW / maxPhys, physH / maxPhys, physD / maxPhys)
+  gl.uniform1f(locs.u_isoLevel, isoThreshold)
 
   // Build inverse model (rotation) matrix
   const model = buildRotationMatrix(angleY, angleX)

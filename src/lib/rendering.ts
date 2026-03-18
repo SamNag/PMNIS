@@ -68,6 +68,7 @@ export const renderSlice = (
   layers: AnnotationLayer[],
   showMaskOverlay: boolean,
   rotateToFill = false,
+  highlightLayerId?: string,
 ): RenderTransform => {
   fitCanvasToDevicePixelRatio(canvas)
   const ctx = canvas.getContext('2d')
@@ -167,22 +168,78 @@ export const renderSlice = (
       continue
     }
 
-    ctx.strokeStyle = layer.color
-    ctx.lineWidth = 2
-    ctx.fillStyle = `${layer.color}33`
+    const isHighlighted = layer.id === highlightLayerId
     for (const mark of marks) {
-      const cx = useRotated
-        ? transform.drawX + ((sourceHeight - mark.y - 1) / sourceHeight) * transform.drawW
-        : transform.drawX + (mark.x / sourceWidth) * transform.drawW
-      const cy = useRotated
-        ? transform.drawY + (mark.x / sourceWidth) * transform.drawH
-        : transform.drawY + (mark.y / sourceHeight) * transform.drawH
-      const radius = mark.radius * radiusScale
+      // Helper to map a slice-space point to canvas coordinates.
+      const toCanvasX = (px: number) =>
+        useRotated
+          ? transform.drawX + ((sourceHeight - px) / sourceHeight) * transform.drawW
+          : transform.drawX + (px / sourceWidth) * transform.drawW
+      const toCanvasY = (py: number) =>
+        useRotated
+          ? transform.drawY + (py / sourceWidth) * transform.drawH
+          : transform.drawY + (py / sourceHeight) * transform.drawH
 
-      ctx.beginPath()
-      ctx.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
-      ctx.fill()
-      ctx.stroke()
+      // If a contour polygon is available, draw it; otherwise fall back to a circle.
+      if (mark.contour && mark.contour.length > 1) {
+        const buildPath = () => {
+          ctx.beginPath()
+          const first = mark.contour![0]!
+          // For rotated view the x/y swap must mirror what circle rendering does:
+          // circle cx uses mark.y, cy uses mark.x — contour coords follow the same space.
+          ctx.moveTo(
+            useRotated ? toCanvasX(first.y) : toCanvasX(first.x),
+            useRotated ? toCanvasY(first.x) : toCanvasY(first.y),
+          )
+          for (let i = 1; i < mark.contour!.length; i++) {
+            const pt = mark.contour![i]!
+            ctx.lineTo(
+              useRotated ? toCanvasX(pt.y) : toCanvasX(pt.x),
+              useRotated ? toCanvasY(pt.x) : toCanvasY(pt.y),
+            )
+          }
+          ctx.closePath()
+        }
+
+        if (isHighlighted) {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)'
+          ctx.lineWidth = 5
+          buildPath()
+          ctx.stroke()
+        }
+
+        ctx.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
+        ctx.strokeStyle = layer.color
+        ctx.lineWidth = isHighlighted ? 2.5 : 1.5
+        buildPath()
+        ctx.fill()
+        ctx.stroke()
+      } else {
+        // Fallback: plain circle (manual brush marks added to AI layers during editing).
+        const cx = useRotated
+          ? transform.drawX + ((sourceHeight - mark.y - 1) / sourceHeight) * transform.drawW
+          : transform.drawX + (mark.x / sourceWidth) * transform.drawW
+        const cy = useRotated
+          ? transform.drawY + (mark.x / sourceWidth) * transform.drawH
+          : transform.drawY + (mark.y / sourceHeight) * transform.drawH
+        const radius = mark.radius * radiusScale
+
+        if (isHighlighted) {
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)'
+          ctx.lineWidth = 5
+          ctx.beginPath()
+          ctx.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
+          ctx.stroke()
+        }
+
+        ctx.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
+        ctx.strokeStyle = layer.color
+        ctx.lineWidth = isHighlighted ? 2.5 : 1.5
+        ctx.beginPath()
+        ctx.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
+        ctx.fill()
+        ctx.stroke()
+      }
     }
   }
 

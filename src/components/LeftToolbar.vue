@@ -133,7 +133,7 @@ watch(activeToolbarSection, () => {
 </script>
 
 <template>
-  <aside class="relative z-[220] w-full rounded-2xl border border-zinc-200 bg-zinc-50/70 p-2.5 shadow-panel md:w-[92px] overflow-visible">
+  <aside class="relative z-[220] w-full rounded-2xl border border-zinc-200 bg-zinc-50/70 p-2.5 shadow-panel md:w-[92px] overflow-visible" data-tutorial="left-toolbar">
     <div class="space-y-2.5 overflow-y-auto overflow-x-hidden">
       <!-- General controls (no centered title) -->
       <div class="flex flex-col items-center gap-2">
@@ -233,7 +233,7 @@ watch(activeToolbarSection, () => {
     </div>
 
     <!-- Bottom general actions placed after control section so they don't overlap -->
-    <div class="mt-2">
+    <div class="mt-2" data-tutorial="fullscreen-toggle">
       <div class="my-1 h-px w-full bg-zinc-200" />
       <div class="flex flex-col items-center gap-2 mt-2">
         <TooltipIconButton

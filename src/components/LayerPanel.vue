@@ -9,7 +9,7 @@ const { annotationLayers, activeLayerId, isPatientLoaded, showTumorMask } = stor
 </script>
 
 <template>
-  <section class="rounded-2xl border border-zinc-200 bg-white p-4 shadow-panel">
+  <section class="rounded-2xl border border-zinc-200 bg-white p-4 shadow-panel" data-tutorial="layer-panel">
     <div class="mb-3 flex items-center justify-between">
       <div class="inline-flex items-center gap-2">
         <Layers2 class="h-4 w-4 text-zinc-500" />

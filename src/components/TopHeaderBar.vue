@@ -85,7 +85,7 @@ const handleFileUpload = async (event: Event) => {
   <!-- Normal full header -->
   <header v-else class="rounded-2xl border border-zinc-200 bg-white/90 p-4 shadow-panel">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3" data-tutorial="header-buttons">
         <button
           type="button"
           class="inline-flex items-center gap-2 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-800"

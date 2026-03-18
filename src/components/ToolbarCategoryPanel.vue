@@ -14,7 +14,7 @@ const categories: Array<{ key: ToolbarSection; label: string }> = [
 </script>
 
 <template>
-  <aside class="w-full rounded-2xl border border-zinc-200 bg-zinc-50/70 p-2.5 shadow-panel md:w-[92px]">
+  <aside class="w-full rounded-2xl border border-zinc-200 bg-zinc-50/70 p-2.5 shadow-panel md:w-[92px]" data-tutorial="toolbar-categories">
     <div class="space-y-2">
       <button
         v-for="item in categories"

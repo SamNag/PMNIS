@@ -17,7 +17,7 @@ const layoutItems: Array<{ key: LayoutMode; label: string; icon: typeof LayoutGr
 </script>
 
 <template>
-  <section class="rounded-2xl border border-zinc-200 bg-white p-4 shadow-panel">
+  <section class="rounded-2xl border border-zinc-200 bg-white p-4 shadow-panel" data-tutorial="layout-panel">
     <h3 class="mb-3 text-sm font-semibold text-zinc-900">Layout</h3>
 
     <div class="grid grid-cols-3 gap-2">

@@ -59,6 +59,8 @@ export interface AnnotationMark {
   x: number
   y: number
   radius: number
+  /** Irregular contour polygon for AI detections (slice-space coordinates). */
+  contour?: Array<{ x: number; y: number }>
 }
 
 export interface AnnotationLayer {
@@ -79,4 +81,20 @@ export interface RenderSettings {
   contrast: number
   threshold: number
   inverted: boolean
+}
+
+export type DetectionStatus = 'pending' | 'accepted' | 'rejected'
+
+export interface AiDetection {
+  id: string
+  name: string
+  label: string
+  confidence: number
+  centerX: number
+  centerY: number
+  centerZ: number
+  radius: number
+  status: DetectionStatus
+  layerId: string
+  color: string
 }

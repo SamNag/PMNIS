@@ -7,6 +7,7 @@ import AiAssistantPanel from './AiAssistantPanel.vue'
 import LayoutPanel from './LayoutPanel.vue'
 import LayerPanel from './LayerPanel.vue'
 import LeftToolbar from './LeftToolbar.vue'
+import OnboardingTutorial from './OnboardingTutorial.vue'
 import TopHeaderBar from './TopHeaderBar.vue'
 import ToolbarCategoryPanel from './ToolbarCategoryPanel.vue'
 import ViewerGrid from './ViewerGrid.vue'
@@ -15,6 +16,7 @@ const store = useViewerStore()
 const { isFullscreenMode } = storeToRefs(store)
 
 const isSidebarOpen = ref(true)
+const showTutorial = ref(true)
 
 const toggleSidebar = () => {
   isSidebarOpen.value = !isSidebarOpen.value
@@ -81,5 +83,10 @@ const handleBackdropClick = () => {
         </aside>
       </div>
     </div>
+
+    <!-- Onboarding tutorial overlay -->
+    <Teleport to="body">
+      <OnboardingTutorial v-if="showTutorial" @close="showTutorial = false" />
+    </Teleport>
   </div>
 </template>
