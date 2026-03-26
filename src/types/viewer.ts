@@ -18,12 +18,22 @@ export type ToolId =
   | 'contour'
   | 'fill'
   | 'clearSelection'
+  | 'boundingBox'
 
 export type ToolbarSection = 'image' | 'manual' | 'ai' | 'general'
 
-export type LayerType = 'manual' | 'ai'
+export type LayerType = 'manual' | 'ai' | 'folder'
 
 export type AiMode = 'full' | 'semi'
+
+export interface BoundingBox {
+  view: Exclude<ViewType, 'threeD'>
+  slice: number
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
 
 export type AiState = 'idle' | 'running' | 'success' | 'rejected'
 
@@ -72,6 +82,12 @@ export interface AnnotationLayer {
   visible: boolean
   color: string
   annotations: AnnotationMark[]
+  /** Children layers for folder type. */
+  children?: AnnotationLayer[]
+  /** Whether folder is expanded in UI. */
+  expanded?: boolean
+  /** Creation timestamp for work history ordering. */
+  timestamp?: number
 }
 
 export interface RenderSettings {

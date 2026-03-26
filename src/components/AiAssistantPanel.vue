@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bot, Check, Columns2, Pencil, Sparkles, Timer, X } from 'lucide-vue-next'
+import { Bot, Check, Columns2, Crosshair, FolderPlus, Pencil, Sparkles, Timer, X } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useViewerStore } from '../stores/viewerStore'
@@ -15,12 +15,16 @@ const {
   selectedDetectionId,
   editingDetectionId,
   aiRunMode,
+  aiBoundingBox,
+  activeTool,
 } = storeToRefs(store)
 
 const hasDetections = computed(() => aiDetections.value.length > 0)
 const pendingCount = computed(() => aiDetections.value.filter((d) => d.status === 'pending').length)
-/** Semi-auto run → user can accept/reject/edit each detection. */
-const isSemiResult = computed(() => aiRunMode.value === 'semi')
+const allReviewed = computed(() => hasDetections.value && pendingCount.value === 0)
+const acceptedCount = computed(() => aiDetections.value.filter((d) => d.status === 'accepted').length)
+const hasBoundingBox = computed(() => !!aiBoundingBox.value)
+const isDrawingBox = computed(() => activeTool.value === 'boundingBox')
 
 const confidenceClass = (confidence: number) => {
   if (confidence >= 0.8) return 'text-red-500'
@@ -58,32 +62,41 @@ const confidenceClass = (confidence: number) => {
 
     <p class="mb-3 text-xs text-zinc-500">
       <template v-if="aiMode === 'full'">
-        Full mode analyzes the complete scan. Results are final and cannot be edited.
+        Full mode analyzes the complete scan. You can accept, reject, or refine each finding.
       </template>
       <template v-else>
-        Semi mode detects suspicious areas for review. You can accept, reject, or refine each finding by editing boundaries in all three axes.
+        Draw a bounding box in one of the views to define the search area, then run AI. You can accept, reject, or refine each finding.
       </template>
     </p>
 
-    <!-- Run / Refine -->
-    <div class="grid grid-cols-2 gap-2">
+    <!-- Semi-auto: Draw Area button -->
+    <div v-if="aiMode === 'semi'" class="mb-3">
       <button
         type="button"
-        :disabled="!canRunAi"
-        class="rounded-lg bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-100 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
-        @click="store.runAi('run')"
+        class="w-full rounded-lg px-3 py-2 text-xs font-semibold transition"
+        :class="isDrawingBox
+          ? 'bg-cyan-600 text-white'
+          : hasBoundingBox
+            ? 'border border-cyan-300 bg-cyan-50 text-cyan-700 hover:bg-cyan-100'
+            : 'border border-zinc-200 bg-zinc-50 text-zinc-700 hover:bg-zinc-100'"
+        @click="store.startBoundingBoxDraw()"
       >
-        Run AI
-      </button>
-      <button
-        type="button"
-        :disabled="!canRunAi"
-        class="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
-        @click="store.runAi('refine')"
-      >
-        Refine result
+        <Crosshair class="mr-1 inline h-3.5 w-3.5" />
+        <template v-if="isDrawingBox">Drawing... click & drag in a view</template>
+        <template v-else-if="hasBoundingBox">Area selected — click to redraw</template>
+        <template v-else>Draw Area</template>
       </button>
     </div>
+
+    <!-- Run AI -->
+    <button
+      type="button"
+      :disabled="!canRunAi"
+      class="w-full rounded-lg bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-100 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+      @click="store.runAi()"
+    >
+      Run AI
+    </button>
 
     <!-- ====== Detection list ====== -->
     <div v-if="hasDetections" class="mt-3">
@@ -92,10 +105,16 @@ const confidenceClass = (confidence: number) => {
           Findings ({{ aiDetections.length }})
         </p>
         <span
-          v-if="isSemiResult && pendingCount > 0"
+          v-if="pendingCount > 0"
           class="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700"
         >
           {{ pendingCount }} pending
+        </span>
+        <span
+          v-else
+          class="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700"
+        >
+          All reviewed
         </span>
       </div>
 
@@ -131,65 +150,62 @@ const confidenceClass = (confidence: number) => {
             {{ Math.round(detection.confidence * 100) }}%
           </span>
 
-          <!-- ======= Semi-auto controls per detection ======= -->
-          <template v-if="isSemiResult">
-            <template v-if="detection.status === 'pending'">
-              <button
-                class="flex-shrink-0 rounded p-0.5 text-emerald-600 hover:bg-emerald-100 transition"
-                title="Accept"
-                @click.stop="store.acceptDetection(detection.id)"
-              >
-                <Check class="h-3.5 w-3.5" />
-              </button>
-              <button
-                class="flex-shrink-0 rounded p-0.5 text-red-500 hover:bg-red-100 transition"
-                title="Reject"
-                @click.stop="store.rejectDetection(detection.id)"
-              >
-                <X class="h-3.5 w-3.5" />
-              </button>
-              <button
-                class="flex-shrink-0 rounded p-0.5 transition"
-                :class="
-                  editingDetectionId === detection.id
-                    ? 'bg-zinc-900 text-zinc-100'
-                    : 'text-zinc-500 hover:bg-zinc-200'
-                "
-                title="Edit / Refine boundaries"
-                @click.stop="store.editDetection(detection.id)"
-              >
-                <Pencil class="h-3.5 w-3.5" />
-              </button>
-            </template>
-
-            <template v-else-if="detection.status === 'accepted'">
-              <span class="flex-shrink-0 text-emerald-600" title="Accepted">
-                <Check class="h-3.5 w-3.5" />
-              </span>
-              <button
-                class="flex-shrink-0 rounded p-0.5 transition"
-                :class="
-                  editingDetectionId === detection.id
-                    ? 'bg-zinc-900 text-zinc-100'
-                    : 'text-zinc-500 hover:bg-zinc-200'
-                "
-                title="Edit / Refine boundaries"
-                @click.stop="store.editDetection(detection.id)"
-              >
-                <Pencil class="h-3.5 w-3.5" />
-              </button>
-            </template>
-
-            <template v-else>
-              <span class="flex-shrink-0 text-red-400 text-[10px]">Rejected</span>
-            </template>
+          <!-- Per-detection controls (both modes) -->
+          <template v-if="detection.status === 'pending'">
+            <button
+              class="flex-shrink-0 rounded p-0.5 text-emerald-600 hover:bg-emerald-100 transition"
+              title="Accept"
+              @click.stop="store.acceptDetection(detection.id)"
+            >
+              <Check class="h-3.5 w-3.5" />
+            </button>
+            <button
+              class="flex-shrink-0 rounded p-0.5 text-red-500 hover:bg-red-100 transition"
+              title="Reject"
+              @click.stop="store.rejectDetection(detection.id)"
+            >
+              <X class="h-3.5 w-3.5" />
+            </button>
+            <button
+              class="flex-shrink-0 rounded p-0.5 transition"
+              :class="
+                editingDetectionId === detection.id
+                  ? 'bg-zinc-900 text-zinc-100'
+                  : 'text-zinc-500 hover:bg-zinc-200'
+              "
+              title="Edit / Refine boundaries"
+              @click.stop="store.editDetection(detection.id)"
+            >
+              <Pencil class="h-3.5 w-3.5" />
+            </button>
           </template>
-          <!-- Full-auto: no per-detection actions (navigation only) -->
+
+          <template v-else-if="detection.status === 'accepted'">
+            <span class="flex-shrink-0 text-emerald-600" title="Accepted">
+              <Check class="h-3.5 w-3.5" />
+            </span>
+            <button
+              class="flex-shrink-0 rounded p-0.5 transition"
+              :class="
+                editingDetectionId === detection.id
+                  ? 'bg-zinc-900 text-zinc-100'
+                  : 'text-zinc-500 hover:bg-zinc-200'
+              "
+              title="Edit / Refine boundaries"
+              @click.stop="store.editDetection(detection.id)"
+            >
+              <Pencil class="h-3.5 w-3.5" />
+            </button>
+          </template>
+
+          <template v-else>
+            <span class="flex-shrink-0 text-red-400 text-[10px]">Rejected</span>
+          </template>
         </div>
       </div>
 
-      <!-- Semi-auto bulk actions -->
-      <div v-if="isSemiResult && pendingCount > 0" class="mt-2 grid grid-cols-2 gap-2">
+      <!-- Bulk actions (while pending exist) -->
+      <div v-if="pendingCount > 0" class="mt-2 grid grid-cols-2 gap-2">
         <button
           type="button"
           class="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-100"
@@ -205,6 +221,25 @@ const confidenceClass = (confidence: number) => {
           Reject All
         </button>
       </div>
+
+      <!-- Create Layer button (when all reviewed) -->
+      <button
+        v-if="allReviewed"
+        type="button"
+        class="mt-2 w-full rounded-lg px-3 py-2 text-xs font-semibold text-white transition"
+        :class="acceptedCount > 0
+          ? 'bg-emerald-600 hover:bg-emerald-700'
+          : 'bg-zinc-700 hover:bg-zinc-600'"
+        @click="store.finalizeAiResults()"
+      >
+        <FolderPlus class="mr-1 inline h-3.5 w-3.5" />
+        <template v-if="acceptedCount > 0">
+          Create Layer ({{ acceptedCount }} accepted)
+        </template>
+        <template v-else>
+          Create Empty Layer
+        </template>
+      </button>
     </div>
 
     <!-- Compare overlay -->
@@ -249,10 +284,10 @@ const confidenceClass = (confidence: number) => {
       </p>
       <p class="mt-1">
         <template v-if="aiMode === 'full'">
-          Fully automatic mode produces final contour results. Click a finding to navigate across all views.
+          Fully automatic mode scans the entire volume. Click a finding to navigate, use controls to accept, reject, or edit, then create a layer.
         </template>
         <template v-else>
-          Semi-automatic mode identifies suspicious areas for review. Click a finding to navigate, then use the pencil icon to refine boundaries with brush/eraser in any axis.
+          Semi-automatic mode: draw a bounding box first, then run AI. Review each finding, then create a layer with accepted results.
         </template>
       </p>
     </div>

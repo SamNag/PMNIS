@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Eye } from 'lucide-vue-next'
 import { useViewerStore } from '../stores/viewerStore'
-import type { ViewType, ViewportState } from '../types/viewer'
+import type { ViewType, ViewportState, BoundingBox } from '../types/viewer'
 import { fitCanvasToDevicePixelRatio, renderSlice, screenToSlice, type RenderTransform } from '../lib/rendering'
 import { renderThreeDVolume, destroyThreeDVolume } from '../lib/rendering3d'
 import { getSliceSize, getViewMaxSlice } from '../lib/volume'
@@ -22,6 +22,7 @@ const {
   layout,
   renderSettings,
   annotationLayers,
+  annotationVersion,
   showTumorMask,
   compareOverlay,
   isPatientLoaded,
@@ -31,6 +32,7 @@ const {
   canAnnotate,
   aiDetections,
   selectedDetectionId,
+  aiBoundingBox,
 } = storeToRefs(store)
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -51,6 +53,8 @@ const activeMouseButton = ref<number | null>(null)
 const isDrawing = ref(false)
 const cursorPoint = ref<{ x: number; y: number } | null>(null)
 const lastDrawnPoint = ref<{ x: number; y: number; slice: number; view: Exclude<ViewType, 'threeD'> } | null>(null)
+/** Temporary bounding box while the user is dragging. */
+const drawingBox = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
 let resizeObserver: ResizeObserver | null = null
 
 // Fullscreen 3D clip slider state
@@ -100,9 +104,22 @@ const availableViews: Array<{ key: ViewType; label: string }> = [
   { key: 'threeD', label: '3D' },
 ]
 
+/** Flatten folder children so the renderer sees individual layers. */
 const visibleLayers = computed(() => {
-  if (compareOverlay.value) return annotationLayers.value.filter((layer) => layer.type === 'ai')
-  return annotationLayers.value
+  const result: typeof annotationLayers.value = []
+  for (const layer of annotationLayers.value) {
+    if (layer.type === 'folder') {
+      if (layer.visible && layer.children) {
+        for (const child of layer.children) {
+          result.push(child)
+        }
+      }
+    } else {
+      result.push(layer)
+    }
+  }
+  if (compareOverlay.value) return result.filter((l) => l.type === 'ai')
+  return result
 })
 
 const highlightLayerId = computed(() => {
@@ -133,26 +150,37 @@ const previewRadiusPx = computed(() => {
   return Math.max(1, getAnnotationRadius() * scale)
 })
 
+const isToolPreviewViewport = computed(
+  () =>
+    props.viewport.assignedView !== 'threeD' &&
+    activeViewportId.value === props.viewport.id,
+)
+
 const showBrushPreview = computed(
   () =>
     !!cursorPoint.value &&
     canAnnotate.value &&
-    activeTool.value === 'brush' &&
-    props.viewport.assignedView !== 'threeD' &&
-    activeViewportId.value === props.viewport.id,
+    (activeTool.value === 'brush' || activeTool.value === 'eraser') &&
+    isToolPreviewViewport.value,
 )
 
 const hideNativeCursor = computed(
   () =>
-    activeTool.value === 'brush' &&
-    canAnnotate.value &&
-    props.viewport.assignedView !== 'threeD' &&
-    activeViewportId.value === props.viewport.id,
+    ((activeTool.value === 'brush' || activeTool.value === 'eraser') && canAnnotate.value ||
+     activeTool.value === 'boundingBox') &&
+    isToolPreviewViewport.value,
 )
 
-const brushPreviewStyle = computed(() => {
+const canvasCursorClass = computed(() => {
+  if (activeTool.value === 'boundingBox' && props.viewport.assignedView !== 'threeD') return 'cursor-crosshair'
+  if (hideNativeCursor.value) return 'cursor-none'
+  return ''
+})
+
+const toolPreviewStyle = computed(() => {
   if (!cursorPoint.value || !showBrushPreview.value) return {}
-  const color = activeLayer.value?.color ?? '#f97316'
+  const isEraser = activeTool.value === 'eraser'
+  const color = isEraser ? '#ef4444' : (activeLayer.value?.color ?? '#f97316')
   const radius = previewRadiusPx.value
   return {
     left: `${cursorPoint.value.x}px`,
@@ -160,6 +188,9 @@ const brushPreviewStyle = computed(() => {
     transform: 'translate(-50%, -50%)',
     width: `${radius * 2}px`,
     height: `${radius * 2}px`,
+    borderRadius: '9999px',
+    borderWidth: '2px',
+    borderStyle: 'solid' as const,
     borderColor: color,
     backgroundColor: `${color}2e`,
   }
@@ -179,6 +210,60 @@ const draw2D = () => {
     false,
     highlightLayerId.value,
   )
+
+  // Render bounding box overlay
+  const box = drawingBox.value ?? (
+    aiBoundingBox.value && aiBoundingBox.value.view === props.viewport.assignedView
+      ? aiBoundingBox.value
+      : null
+  )
+  if (box && volumeData.value) {
+    const ctx = canvasRef.value.getContext('2d')
+    if (ctx) {
+      const t = transformRef.value
+      const { width: sw, height: sh } = getSliceSize(
+        props.viewport.assignedView as Exclude<ViewType, 'threeD'>,
+        volumeData.value,
+      )
+      const cx1 = t.drawX + (Math.min(box.x1, box.x2) / sw) * t.drawW
+      const cy1 = t.drawY + (Math.min(box.y1, box.y2) / sh) * t.drawH
+      const cx2 = t.drawX + (Math.max(box.x1, box.x2) / sw) * t.drawW
+      const cy2 = t.drawY + (Math.max(box.y1, box.y2) / sh) * t.drawH
+      const bw = cx2 - cx1
+      const bh = cy2 - cy1
+
+      // Dim area outside the box
+      const dx = t.drawX, dy = t.drawY, dw = t.drawW, dh = t.drawH
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)'
+      ctx.fillRect(dx, dy, dw, cy1 - dy)                       // top strip
+      ctx.fillRect(dx, cy2, dw, dy + dh - cy2)                 // bottom strip
+      ctx.fillRect(dx, cy1, cx1 - dx, bh)                      // left strip
+      ctx.fillRect(cx2, cy1, dx + dw - cx2, bh)                // right strip
+
+      // Bright solid border
+      ctx.strokeStyle = '#22d3ee'
+      ctx.lineWidth = 2.5
+      ctx.setLineDash([])
+      ctx.strokeRect(cx1, cy1, bw, bh)
+
+      // Corner brackets
+      const cornerLen = Math.min(14, bw * 0.25, bh * 0.25)
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 3
+      ctx.beginPath()
+      ctx.moveTo(cx1, cy1 + cornerLen); ctx.lineTo(cx1, cy1); ctx.lineTo(cx1 + cornerLen, cy1)
+      ctx.moveTo(cx2 - cornerLen, cy1); ctx.lineTo(cx2, cy1); ctx.lineTo(cx2, cy1 + cornerLen)
+      ctx.moveTo(cx1, cy2 - cornerLen); ctx.lineTo(cx1, cy2); ctx.lineTo(cx1 + cornerLen, cy2)
+      ctx.moveTo(cx2 - cornerLen, cy2); ctx.lineTo(cx2, cy2); ctx.lineTo(cx2, cy2 - cornerLen)
+      ctx.stroke()
+
+      // Label
+      ctx.font = '11px sans-serif'
+      ctx.fillStyle = '#22d3ee'
+      ctx.fillText('AI Search Area', cx1 + 4, cy1 - 5)
+    }
+  }
+
 }
 
 const draw3D = () => {
@@ -375,7 +460,7 @@ const drawInterpolatedMarks = (
 
 const drawAtPointer = (event: PointerEvent) => {
   const pointer = mapPointerToSlice(event)
-  cursorPoint.value = pointer ? { x: pointer.x, y: pointer.y } : null
+  cursorPoint.value = pointer ? { x: event.clientX, y: event.clientY } : null
 
   if (!pointer || !canAnnotate.value || props.viewport.assignedView === 'threeD') return
 
@@ -433,6 +518,17 @@ const handlePointerDown = (event: PointerEvent) => {
     return
   }
 
+  // Bounding box tool
+  if (activeTool.value === 'boundingBox' && event.button === 0) {
+    const pointer = mapPointerToSlice(event)
+    if (pointer) {
+      drawingBox.value = { x1: pointer.mappedX, y1: pointer.mappedY, x2: pointer.mappedX, y2: pointer.mappedY }
+      isDrawing.value = true
+      canvasRef.value?.setPointerCapture(event.pointerId)
+    }
+    return
+  }
+
   // Left button with annotation tools
   if (!canAnnotate.value || !canvasRef.value) return
 
@@ -441,6 +537,7 @@ const handlePointerDown = (event: PointerEvent) => {
   lastDrawnPoint.value = null
   canvasRef.value.setPointerCapture(event.pointerId)
   drawAtPointer(event)
+  scheduleDraw()
 }
 
 const handlePointerMove = (event: PointerEvent) => {
@@ -456,10 +553,23 @@ const handlePointerMove = (event: PointerEvent) => {
     return
   }
 
+  // Handle bounding box drawing
+  if (activeTool.value === 'boundingBox' && isDrawing.value && drawingBox.value) {
+    const pointer = mapPointerToSlice(event)
+    if (pointer) {
+      drawingBox.value.x2 = pointer.mappedX
+      drawingBox.value.y2 = pointer.mappedY
+      scheduleDraw()
+    }
+    return
+  }
+
   const pointer = mapPointerToSlice(event)
-  cursorPoint.value = pointer ? { x: pointer.x, y: pointer.y } : null
+  cursorPoint.value = pointer ? { x: event.clientX, y: event.clientY } : null
   if (!isDrawing.value) return
   drawAtPointer(event)
+  // During active drawing, schedule redraw directly (annotationVersion not bumped until stroke end)
+  scheduleDraw()
 }
 
 const handlePointerUp = (event: PointerEvent) => {
@@ -472,6 +582,26 @@ const handlePointerUp = (event: PointerEvent) => {
   // Handle 2D panning
   if (isPanning.value) {
     handle2DPanEnd(event)
+    return
+  }
+
+  // Finalize bounding box
+  if (activeTool.value === 'boundingBox' && isDrawing.value && drawingBox.value) {
+    const view = props.viewport.assignedView as Exclude<ViewType, 'threeD'>
+    store.setBoundingBox({
+      view,
+      slice: props.viewport.sliceIndex,
+      x1: Math.min(drawingBox.value.x1, drawingBox.value.x2),
+      y1: Math.min(drawingBox.value.y1, drawingBox.value.y2),
+      x2: Math.max(drawingBox.value.x1, drawingBox.value.x2),
+      y2: Math.max(drawingBox.value.y1, drawingBox.value.y2),
+    })
+    drawingBox.value = null
+    isDrawing.value = false
+    if (canvasRef.value?.hasPointerCapture(event.pointerId)) {
+      canvasRef.value.releasePointerCapture(event.pointerId)
+    }
+    scheduleDraw()
     return
   }
 
@@ -512,17 +642,20 @@ onBeforeUnmount(() => {
   releaseDrawing()
 })
 
+// Shallow watch on annotationVersion replaces the expensive deep watch on annotationLayers.
+// renderSettings still needs deep: true (it's a small 8-field object).
+watch(annotationVersion, () => scheduleDraw())
 watch(
   [
     () => props.viewport.assignedView,
     () => props.viewport.sliceIndex,
     volumeData,
     renderSettings,
-    annotationLayers,
     showTumorMask,
     compareOverlay,
     selectedDetectionId,
     clip3D,
+    aiBoundingBox,
   ],
   () => scheduleDraw(),
   { deep: true },
@@ -595,7 +728,7 @@ watch(activeViewportId, (next) => {
       v-show="viewport.assignedView !== 'threeD'"
       ref="canvasRef"
       class="h-full w-full touch-none"
-      :class="{ 'cursor-none': hideNativeCursor }"
+      :class="canvasCursorClass"
       @wheel="handleWheel"
       @pointerdown="handlePointerDown"
       @pointermove="handlePointerMove"
@@ -619,7 +752,14 @@ watch(activeViewportId, (next) => {
       @contextmenu.prevent
     />
 
-    <div v-if="showBrushPreview" class="pointer-events-none absolute z-20 rounded-full border-2" :style="brushPreviewStyle" />
+    <!-- Tool cursor preview (teleported to body so it's never clipped by overflow-hidden) -->
+    <Teleport to="body">
+      <div
+        v-if="showBrushPreview"
+        class="pointer-events-none fixed z-[9999]"
+        :style="toolPreviewStyle"
+      />
+    </Teleport>
 
     <!-- 3D hint text -->
     <div

@@ -17,7 +17,6 @@ import {
   SunMedium,
   Trash2,
   Undo2,
-  Wand,
   X,
   ZoomIn,
 } from 'lucide-vue-next'
@@ -90,7 +89,11 @@ const adjustControlConfig = computed(() => {
 })
 
 const openManualTool = (tool: 'brush' | 'eraser') => {
-  // Toggle the overlay if clicking the same tool that's already active
+  if (tool === 'eraser') {
+    overlayMode.value = null
+    selectTool(tool, 'manual')
+    return
+  }
   if (overlayMode.value === 'size' && activeTool.value === tool) {
     overlayMode.value = null
     return
@@ -178,14 +181,14 @@ watch(activeToolbarSection, () => {
       <div v-else-if="activeToolbarSection === 'manual'" class="flex flex-col items-center gap-2">
         <TooltipIconButton
           :icon="Brush"
-          label="Brush"
+          :label="isManualReady ? 'Brush' : 'Brush – select or create a finding first'"
           :active="activeTool === 'brush'"
           :disabled="!isManualReady"
           @click="openManualTool('brush')"
         />
         <TooltipIconButton
           :icon="Eraser"
-          label="Rubber"
+          :label="isManualReady ? 'Rubber – clears drawing' : 'Rubber – select or create a finding first'"
           :active="activeTool === 'eraser'"
           :disabled="!isManualReady"
           @click="openManualTool('eraser')"
@@ -216,9 +219,8 @@ watch(activeToolbarSection, () => {
           label="Run AI"
           :disabled="!canRunAi"
           :active="aiState === 'running'"
-          @click="store.runAi('run')"
+          @click="store.runAi()"
         />
-        <TooltipIconButton :icon="Wand" label="Refine result" :disabled="!canRunAi" @click="store.runAi('refine')" />
         <TooltipIconButton :icon="Check" label="Accept result" :disabled="aiState !== 'success'" @click="store.acceptAi()" />
         <TooltipIconButton :icon="X" label="Reject result" :disabled="aiState === 'running'" @click="store.rejectAi()" />
         <TooltipIconButton

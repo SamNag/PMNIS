@@ -11,6 +11,7 @@ import type {
   AiState,
   AnnotationLayer,
   AnnotationMark,
+  BoundingBox,
   EditAcceptAnswer,
   FeedbackEntry,
   FeedbackPopupState,
@@ -147,6 +148,10 @@ export const useViewerStore = defineStore('viewer', () => {
   const activeLayerId = ref<string | null>(null)
   const manualHistory = ref<Record<string, AnnotationMark[][]>>({})
   const manualFuture = ref<Record<string, AnnotationMark[][]>>({})
+  /** Shallow counter bumped whenever annotations change, to avoid deep-watching annotationLayers. */
+  const annotationVersion = ref(0)
+  /** True while the user is actively drawing (between beginManualEdit and endManualEdit). */
+  let drawingActive = false
 
   const aiMode = ref<AiMode>('full')
   const aiState = ref<AiState>('idle')
@@ -157,6 +162,8 @@ export const useViewerStore = defineStore('viewer', () => {
   const editingDetectionId = ref<string | null>(null)
   /** Mode that was active when AI was last run (controls whether editing is allowed). */
   const aiRunMode = ref<AiMode | null>(null)
+  /** Bounding box drawn by user for semi-auto AI mode. */
+  const aiBoundingBox = ref<BoundingBox | null>(null)
 
   // ── Feedback ──
   const feedbackPopup = ref<FeedbackPopupState>({ visible: false, type: 'full-auto-rating' })
@@ -167,9 +174,16 @@ export const useViewerStore = defineStore('viewer', () => {
     () => viewports.value.find((viewport) => viewport.id === activeViewportId.value) ?? viewports.value[0] ?? null,
   )
 
-  const activeLayer = computed(() =>
-    annotationLayers.value.find((layer) => layer.id === activeLayerId.value) ?? null,
-  )
+  const activeLayer = computed(() => {
+    for (const layer of annotationLayers.value) {
+      if (layer.id === activeLayerId.value) return layer
+      if (layer.children) {
+        const child = layer.children.find((c) => c.id === activeLayerId.value)
+        if (child) return child
+      }
+    }
+    return null
+  })
 
   const selectedLayerHasSelection = computed(() => (activeLayer.value?.annotations.length ?? 0) > 0)
 
@@ -181,6 +195,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const isLayerEditable = (layer: AnnotationLayer): boolean => {
     if (layer.type === 'manual') return true
+    if (layer.type === 'folder') return false // Folder itself is not editable, children are
     if (layer.type === 'ai' && editingDetectionId.value) {
       const detection = aiDetections.value.find((d) => d.id === editingDetectionId.value)
       return !!detection && detection.layerId === layer.id && detection.status !== 'rejected'
@@ -195,6 +210,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const canRunAi = computed(() => {
     if (!isPatientLoaded.value || aiState.value === 'running') return false
+    if (aiMode.value === 'semi' && !aiBoundingBox.value) return false
     return true
   })
 
@@ -261,6 +277,7 @@ export const useViewerStore = defineStore('viewer', () => {
     selectedDetectionId.value = null
     editingDetectionId.value = null
     aiRunMode.value = null
+    aiBoundingBox.value = null
 
     viewports.value = defaultViewports().map((viewport) => {
       if (viewport.assignedView === 'threeD') return viewport
@@ -299,6 +316,7 @@ export const useViewerStore = defineStore('viewer', () => {
       selectedDetectionId.value = null
       editingDetectionId.value = null
       aiRunMode.value = null
+      aiBoundingBox.value = null
 
       viewports.value = defaultViewports().map((viewport) => {
         if (viewport.assignedView === 'threeD') {
@@ -432,6 +450,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (tool === 'clearSelection' && activeLayer.value) {
       pushManualHistorySnapshot(activeLayer.value)
       activeLayer.value.annotations = []
+      annotationVersion.value++
     }
   }
 
@@ -476,48 +495,142 @@ export const useViewerStore = defineStore('viewer', () => {
   }
 
   const createManualLayer = () => {
-    const layer: AnnotationLayer = {
-      id: makeId('layer'),
-      name: `Manual Layer ${annotationLayers.value.length + 1}`,
+    const childId = makeId('layer')
+    const color = getNextLayerColor()
+
+    const child: AnnotationLayer = {
+      id: childId,
+      name: 'Finding 1',
       type: 'manual',
       visible: true,
-      color: getNextLayerColor(),
+      color,
       annotations: [],
     }
 
-    annotationLayers.value.unshift(layer)
-    activeLayerId.value = layer.id
-    getManualHistoryBucket(layer.id)
-    getManualFutureBucket(layer.id)
+    const folder: AnnotationLayer = {
+      id: makeId('folder'),
+      name: `Session ${annotationLayers.value.length + 1}`,
+      type: 'folder',
+      visible: true,
+      color,
+      annotations: [],
+      children: [child],
+      expanded: true,
+      timestamp: Date.now(),
+    }
+
+    annotationLayers.value.unshift(folder)
+    activeLayerId.value = childId
+    getManualHistoryBucket(childId)
+    getManualFutureBucket(childId)
+  }
+
+  /** Find a layer by id, searching also in folder children. */
+  const findLayerById = (layerId: string): AnnotationLayer | null => {
+    for (const layer of annotationLayers.value) {
+      if (layer.id === layerId) return layer
+      if (layer.children) {
+        const child = layer.children.find((c) => c.id === layerId)
+        if (child) return child
+      }
+    }
+    return null
   }
 
   const setActiveLayer = (layerId: string) => {
     activeLayerId.value = layerId
   }
 
+  const toggleFolderExpanded = (folderId: string) => {
+    const folder = annotationLayers.value.find((l) => l.id === folderId)
+    if (folder && folder.type === 'folder') {
+      folder.expanded = !folder.expanded
+    }
+  }
+
   const toggleLayerVisibility = (layerId: string) => {
-    const layer = annotationLayers.value.find((entry) => entry.id === layerId)
+    const layer = findLayerById(layerId)
     if (!layer) return
     layer.visible = !layer.visible
+    // For folders, toggle all children too
+    if (layer.type === 'folder' && layer.children) {
+      for (const child of layer.children) {
+        child.visible = layer.visible
+      }
+    }
+    annotationVersion.value++
   }
 
   const deleteLayer = (layerId: string) => {
-    annotationLayers.value = annotationLayers.value.filter((layer) => layer.id !== layerId)
-    delete manualHistory.value[layerId]
-    delete manualFuture.value[layerId]
-    if (activeLayerId.value === layerId) {
-      activeLayerId.value = annotationLayers.value[0]?.id ?? null
+    // Check if it's a top-level layer (including folder)
+    const topLevel = annotationLayers.value.find((l) => l.id === layerId)
+    if (topLevel) {
+      // Clean up children history if folder
+      if (topLevel.children) {
+        for (const child of topLevel.children) {
+          delete manualHistory.value[child.id]
+          delete manualFuture.value[child.id]
+        }
+      }
+      annotationLayers.value = annotationLayers.value.filter((layer) => layer.id !== layerId)
+      delete manualHistory.value[layerId]
+      delete manualFuture.value[layerId]
+    } else {
+      // Check if it's a child inside a folder
+      for (const folder of annotationLayers.value) {
+        if (folder.children) {
+          const idx = folder.children.findIndex((c) => c.id === layerId)
+          if (idx >= 0) {
+            folder.children.splice(idx, 1)
+            delete manualHistory.value[layerId]
+            delete manualFuture.value[layerId]
+            break
+          }
+        }
+      }
     }
+
+    if (activeLayerId.value === layerId) {
+      // Find next available layer
+      const first = annotationLayers.value[0]
+      activeLayerId.value = (first?.children?.[0]?.id ?? first?.id) ?? null
+    }
+    annotationVersion.value++
+  }
+
+  /** Add a new finding child to an existing folder. */
+  const addFindingToFolder = (folderId: string) => {
+    const folder = annotationLayers.value.find((l) => l.id === folderId && l.type === 'folder')
+    if (!folder || !folder.children) return
+
+    const childId = makeId('layer')
+    const color = getNextLayerColor()
+    const child: AnnotationLayer = {
+      id: childId,
+      name: `Finding ${folder.children.length + 1}`,
+      type: 'manual',
+      visible: true,
+      color,
+      annotations: [],
+    }
+
+    folder.children.push(child)
+    folder.expanded = true
+    activeLayerId.value = childId
+    getManualHistoryBucket(childId)
+    getManualFutureBucket(childId)
   }
 
   const beginManualEdit = () => {
     const layer = activeLayer.value
     if (!layer || !isLayerEditable(layer)) return
     pushManualHistorySnapshot(layer)
+    drawingActive = true
   }
 
   const endManualEdit = () => {
-    // Reserved for future batching hooks.
+    drawingActive = false
+    annotationVersion.value++
   }
 
   const undoManualEdit = () => {
@@ -528,6 +641,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!history.length) return
     future.push(cloneAnnotations(layer.annotations))
     layer.annotations = history.pop() ?? []
+    annotationVersion.value++
   }
 
   const redoManualEdit = () => {
@@ -538,6 +652,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!future.length) return
     history.push(cloneAnnotations(layer.annotations))
     layer.annotations = future.pop() ?? []
+    annotationVersion.value++
   }
 
   const resetActiveManualLayer = () => {
@@ -545,6 +660,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!layer || !isLayerEditable(layer) || !layer.annotations.length) return
     pushManualHistorySnapshot(layer)
     layer.annotations = []
+    annotationVersion.value++
   }
 
   const addAnnotation = (
@@ -556,16 +672,31 @@ export const useViewerStore = defineStore('viewer', () => {
   ) => {
     if (!canAnnotate.value || !activeLayer.value) return
 
+    const mark: import('../types/viewer').AnnotationMark = { view, slice, x, y, radius }
     if (activeTool.value === 'eraser') {
-      activeLayer.value.annotations.push({ view, slice, x, y, radius, eraser: true })
-      return
+      mark.eraser = true
     }
+    activeLayer.value.annotations.push(mark)
+  }
 
-    activeLayer.value.annotations.push({ view, slice, x, y, radius })
+  const startBoundingBoxDraw = () => {
+    activeTool.value = 'boundingBox'
+    activeToolbarSection.value = 'ai'
+    aiBoundingBox.value = null
+  }
+
+  const setBoundingBox = (box: BoundingBox) => {
+    aiBoundingBox.value = box
+    activeTool.value = 'zoom' // Return to default tool
+  }
+
+  const clearBoundingBox = () => {
+    aiBoundingBox.value = null
   }
 
   const setAiMode = (mode: AiMode) => {
     aiMode.value = mode
+    if (mode === 'full') aiBoundingBox.value = null
   }
 
   const setCompareOverlay = () => {
@@ -608,8 +739,8 @@ export const useViewerStore = defineStore('viewer', () => {
     detection.status = 'accepted'
     if (editingDetectionId.value === detectionId) editingDetectionId.value = null
 
-    // In semi-auto mode, if the user edited this detection before accepting, ask about the edit
-    if (aiRunMode.value === 'semi' && wasEdited) {
+    // If the user edited this detection before accepting, ask about the edit
+    if (wasEdited) {
       showFeedbackPopup('semi-edit-accept', detection.id, detection.name)
     }
   }
@@ -622,11 +753,10 @@ export const useViewerStore = defineStore('viewer', () => {
     const layer = annotationLayers.value.find((l) => l.id === detection.layerId)
     if (layer) layer.visible = false
     if (selectedDetectionId.value === detectionId) selectedDetectionId.value = null
+    annotationVersion.value++
 
-    // In semi-auto mode, ask the user why they rejected this detection
-    if (aiRunMode.value === 'semi') {
-      showFeedbackPopup('semi-reject-reason', detection.id, detection.name)
-    }
+    // Ask the user why they rejected this detection
+    showFeedbackPopup('semi-reject-reason', detection.id, detection.name)
   }
 
   const editDetection = (detectionId: string) => {
@@ -657,6 +787,7 @@ export const useViewerStore = defineStore('viewer', () => {
     }
     selectedDetectionId.value = null
     editingDetectionId.value = null
+    annotationVersion.value++
   }
 
   const rejectAi = () => {
@@ -667,6 +798,8 @@ export const useViewerStore = defineStore('viewer', () => {
     selectedDetectionId.value = null
     editingDetectionId.value = null
     aiRunMode.value = null
+    aiBoundingBox.value = null
+    annotationVersion.value++
   }
 
   const acceptAi = () => {
@@ -674,7 +807,75 @@ export const useViewerStore = defineStore('viewer', () => {
     acceptAllDetections()
   }
 
-  const runAi = async (mode: 'run' | 'refine') => {
+  /** After user has reviewed all findings, create a folder layer with accepted ones. */
+  const finalizeAiResults = () => {
+    const accepted = aiDetections.value.filter((d) => d.status === 'accepted')
+    const modeLabel = aiRunMode.value === 'semi' ? 'Semi-Auto' : 'Full-Auto'
+
+    // Collect accepted AI layers as children
+    const childLayers: AnnotationLayer[] = []
+    for (const detection of accepted) {
+      const layer = annotationLayers.value.find((l) => l.id === detection.layerId)
+      if (layer) {
+        childLayers.push({
+          ...layer,
+          type: 'manual', // Convert so user can further edit
+        })
+      }
+    }
+
+    // Remove all AI layers from top level
+    annotationLayers.value = annotationLayers.value.filter((l) => l.type !== 'ai')
+
+    // Always create a folder (empty if all rejected, user can add manual findings)
+    const folderChildId = childLayers.length === 0 ? makeId('layer') : null
+    if (childLayers.length === 0) {
+      // Create one empty finding so the user can start drawing
+      const color = getNextLayerColor()
+      childLayers.push({
+        id: folderChildId!,
+        name: 'Finding 1',
+        type: 'manual',
+        visible: true,
+        color,
+        annotations: [],
+      })
+    }
+
+    const folder: AnnotationLayer = {
+      id: makeId('folder'),
+      name: accepted.length > 0
+        ? `AI ${modeLabel} – ${accepted.length} finding${accepted.length > 1 ? 's' : ''}`
+        : `AI ${modeLabel} – empty`,
+      type: 'folder',
+      visible: true,
+      color: childLayers[0]?.color ?? '#06b6d4',
+      annotations: [],
+      children: childLayers,
+      expanded: true,
+      timestamp: Date.now(),
+    }
+
+    annotationLayers.value.unshift(folder)
+    activeLayerId.value = childLayers[0]?.id ?? null
+
+    // Init history for new empty finding
+    if (folderChildId) {
+      getManualHistoryBucket(folderChildId)
+      getManualFutureBucket(folderChildId)
+    }
+
+    // Clean up AI state
+    aiDetections.value = []
+    selectedDetectionId.value = null
+    editingDetectionId.value = null
+    aiRunMode.value = null
+    aiState.value = 'idle'
+    aiBoundingBox.value = null
+    annotationVersion.value++
+  }
+
+  const runAi = async () => {
     if (!canRunAi.value || !volumeData.value) return
 
     aiRunMode.value = aiMode.value
@@ -687,7 +888,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
     await new Promise<void>((resolve) => {
       const timer = window.setInterval(() => {
-        aiProgress.value = Math.min(100, aiProgress.value + (mode === 'run' ? 7 : 11))
+        aiProgress.value = Math.min(100, aiProgress.value + 7)
         if (aiProgress.value >= 100) {
           window.clearInterval(timer)
           resolve()
@@ -696,48 +897,38 @@ export const useViewerStore = defineStore('viewer', () => {
     })
 
     const vol = volumeData.value
-    const isRefine = mode === 'refine'
+    const box = aiBoundingBox.value
+
+    // Determine tumor center based on mode
+    let cx: number, cy: number, cz: number
+    if (box) {
+      // Semi-auto: place detection within the bounding box center
+      const bx = (box.x1 + box.x2) / 2
+      const by = (box.y1 + box.y2) / 2
+      if (box.view === 'axial') {
+        cx = bx; cy = by; cz = box.slice
+      } else if (box.view === 'coronal') {
+        cx = bx; cy = box.slice; cz = by
+      } else {
+        cx = box.slice; cy = bx; cz = by
+      }
+    } else {
+      // Full-auto: default position
+      cx = vol.width * 0.62
+      cy = vol.height * 0.46
+      cz = vol.depth * 0.52
+    }
 
     const rawDetections = [
       {
         name: 'Primary Tumor',
         label: 'Tumor',
-        confidence: isRefine ? 0.97 : 0.94,
-        cx: vol.width * 0.62,
-        cy: vol.height * 0.46,
-        cz: vol.depth * 0.52,
-        radius: isRefine ? vol.width * 0.09 : vol.width * 0.1,
+        confidence: 0.94,
+        cx,
+        cy,
+        cz,
+        radius: vol.width * 0.1,
         seed: 42,
-      },
-      {
-        name: 'Perilesional Edema',
-        label: 'Edema',
-        confidence: isRefine ? 0.87 : 0.82,
-        cx: vol.width * 0.57,
-        cy: vol.height * 0.5,
-        cz: vol.depth * 0.52,
-        radius: isRefine ? vol.width * 0.05 : vol.width * 0.06,
-        seed: 137,
-      },
-      {
-        name: 'Secondary Lesion',
-        label: 'Lesion',
-        confidence: isRefine ? 0.71 : 0.67,
-        cx: vol.width * 0.35,
-        cy: vol.height * 0.41,
-        cz: vol.depth * 0.58,
-        radius: isRefine ? vol.width * 0.035 : vol.width * 0.04,
-        seed: 271,
-      },
-      {
-        name: 'Possible Artifact',
-        label: 'Artifact',
-        confidence: isRefine ? 0.45 : 0.41,
-        cx: vol.width * 0.5,
-        cy: vol.height * 0.24,
-        cz: vol.depth * 0.76,
-        radius: isRefine ? vol.width * 0.025 : vol.width * 0.03,
-        seed: 389,
       },
     ]
 
@@ -781,12 +972,7 @@ export const useViewerStore = defineStore('viewer', () => {
     }
 
     aiState.value = 'success'
-
-    // In full-auto mode, schedule the feedback popup after a delay
-    // so the user has time to examine the results first
-    if (aiRunMode.value === 'full') {
-      scheduleFullAutoFeedback()
-    }
+    annotationVersion.value++
   }
 
   // ── Feedback actions ──
@@ -863,6 +1049,7 @@ export const useViewerStore = defineStore('viewer', () => {
     brushSize,
     showTumorMask,
     annotationLayers,
+    annotationVersion,
     activeLayer,
     activeLayerId,
     selectedLayerHasSelection,
@@ -878,6 +1065,7 @@ export const useViewerStore = defineStore('viewer', () => {
     editingDetectionId,
     aiRunMode,
     canRunAi,
+    aiBoundingBox,
     loadPatient,
     loadNiftiPatient,
     setLayout,
@@ -903,14 +1091,19 @@ export const useViewerStore = defineStore('viewer', () => {
     setBrushSize,
     createManualLayer,
     setActiveLayer,
+    toggleFolderExpanded,
     toggleLayerVisibility,
     deleteLayer,
+    addFindingToFolder,
     beginManualEdit,
     endManualEdit,
     undoManualEdit,
     redoManualEdit,
     resetActiveManualLayer,
     addAnnotation,
+    startBoundingBoxDraw,
+    setBoundingBox,
+    clearBoundingBox,
     setAiMode,
     setCompareOverlay,
     selectDetection,
@@ -921,6 +1114,7 @@ export const useViewerStore = defineStore('viewer', () => {
     rejectAllDetections,
     rejectAi,
     acceptAi,
+    finalizeAiResults,
     runAi,
     feedbackPopup,
     feedbackEntries,

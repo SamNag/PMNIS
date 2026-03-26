@@ -1,5 +1,5 @@
 import type { AnnotationLayer, RenderSettings, ViewType, VolumeData } from '../types/viewer'
-import { getSliceSize, readVoxelByView } from './volume'
+import { getSliceSize } from './volume'
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 
@@ -59,6 +59,38 @@ const getSliceFromLayer = (
   sliceIndex: number,
 ) => layer.annotations.filter((mark) => mark.view === view && mark.slice === sliceIndex)
 
+// ── Per-canvas cached resources ──
+
+interface SliceCacheEntry {
+  view: string
+  sliceIndex: number
+  windowCenter: number
+  windowWidth: number
+  contrast: number
+  threshold: number
+  inverted: boolean
+  showMask: boolean
+  sourceWidth: number
+  sourceHeight: number
+  imageData: ImageData
+}
+
+const sliceCache = new WeakMap<HTMLCanvasElement, SliceCacheEntry>()
+const offscreenCache = new WeakMap<HTMLCanvasElement, HTMLCanvasElement>()
+/** Get or create a reusable offscreen canvas. */
+const getOffscreen = (key: HTMLCanvasElement, w: number, h: number): HTMLCanvasElement => {
+  let c = offscreenCache.get(key)
+  if (!c) {
+    c = document.createElement('canvas')
+    offscreenCache.set(key, c)
+  }
+  if (c.width !== w || c.height !== h) {
+    c.width = w
+    c.height = h
+  }
+  return c
+}
+
 export const renderSlice = (
   canvas: HTMLCanvasElement,
   view: Exclude<ViewType, 'threeD'>,
@@ -90,37 +122,106 @@ export const renderSlice = (
   const normalArea = baseTransform.drawW * baseTransform.drawH
   const useRotated = rotateToFill && rotatedArea > normalArea * 1.04
   const transform = useRotated ? rotatedTransform : baseTransform
-  const buffer = new ImageData(sourceWidth, sourceHeight)
 
-  for (let y = 0; y < sourceHeight; y += 1) {
-    for (let x = 0; x < sourceWidth; x += 1) {
-      const { mri, mask } = readVoxelByView(view, x, y, sliceIndex, volume)
-      let gray = applyWindowLevel(mri, settings.windowCenter, settings.windowWidth)
-      gray = clamp((gray - 128) * settings.contrast + 128, 0, 255)
-      if (gray < settings.threshold) gray = 0
-      if (settings.inverted) gray = 255 - gray
+  // ── Cached base slice rendering ──
+  const cached = sliceCache.get(canvas)
+  const cacheHit =
+    cached !== undefined &&
+    cached.view === view &&
+    cached.sliceIndex === sliceIndex &&
+    cached.windowCenter === settings.windowCenter &&
+    cached.windowWidth === settings.windowWidth &&
+    cached.contrast === settings.contrast &&
+    cached.threshold === settings.threshold &&
+    cached.inverted === settings.inverted &&
+    cached.showMask === showMaskOverlay &&
+    cached.sourceWidth === sourceWidth &&
+    cached.sourceHeight === sourceHeight
 
-      const pixel = (y * sourceWidth + x) * 4
-      let r = gray
-      let g = gray
-      let b = gray
+  let buffer: ImageData
+  if (cacheHit) {
+    buffer = cached.imageData
+  } else {
+    buffer = new ImageData(sourceWidth, sourceHeight)
 
-      if (showMaskOverlay && mask > 0) {
-        r = gray * 0.25 + 210 * 0.75
-        g = gray * 0.25 + 52 * 0.75
-        b = gray * 0.25 + 68 * 0.75
-      }
+    // Inline voxel index computation — avoids per-pixel function call + object allocation.
+    const mri = volume.mri
+    const mask = volume.mask
+    const vw = volume.width
+    const vh = volume.height
+    let baseIdx: number
+    let strideX: number
+    let strideY: number
 
-      buffer.data[pixel] = r
-      buffer.data[pixel + 1] = g
-      buffer.data[pixel + 2] = b
-      buffer.data[pixel + 3] = 255
+    if (view === 'axial') {
+      baseIdx = sliceIndex * vw * vh
+      strideX = 1
+      strideY = vw
+    } else if (view === 'coronal') {
+      baseIdx = sliceIndex * vw
+      strideX = 1
+      strideY = vw * vh
+    } else {
+      // sagittal
+      baseIdx = sliceIndex
+      strideX = vw
+      strideY = vw * vh
     }
+
+    const wc = settings.windowCenter
+    const ww = settings.windowWidth
+    const ct = settings.contrast
+    const th = settings.threshold
+    const inv = settings.inverted
+    const data = buffer.data
+
+    for (let y = 0; y < sourceHeight; y += 1) {
+      const rowIdx = baseIdx + y * strideY
+      for (let x = 0; x < sourceWidth; x += 1) {
+        const idx = rowIdx + x * strideX
+        const mriVal = mri[idx] ?? 0
+        const maskVal = mask[idx] ?? 0
+
+        let gray = applyWindowLevel(mriVal, wc, ww)
+        gray = clamp((gray - 128) * ct + 128, 0, 255)
+        if (gray < th) gray = 0
+        if (inv) gray = 255 - gray
+
+        const pixel = (y * sourceWidth + x) * 4
+        let r = gray
+        let g = gray
+        let b = gray
+
+        if (showMaskOverlay && maskVal > 0) {
+          r = gray * 0.25 + 210 * 0.75
+          g = gray * 0.25 + 52 * 0.75
+          b = gray * 0.25 + 68 * 0.75
+        }
+
+        data[pixel] = r
+        data[pixel + 1] = g
+        data[pixel + 2] = b
+        data[pixel + 3] = 255
+      }
+    }
+
+    sliceCache.set(canvas, {
+      view,
+      sliceIndex,
+      windowCenter: wc,
+      windowWidth: ww,
+      contrast: ct,
+      threshold: th,
+      inverted: inv,
+      showMask: showMaskOverlay,
+      sourceWidth,
+      sourceHeight,
+      imageData: buffer,
+    })
   }
 
-  const offscreen = document.createElement('canvas')
-  offscreen.width = sourceWidth
-  offscreen.height = sourceHeight
+  // ── Draw base image ──
+  const offscreen = getOffscreen(canvas, sourceWidth, sourceHeight)
   const offscreenCtx = offscreen.getContext('2d')
   if (!offscreenCtx) return { ...transform, rotated: useRotated, sourceWidth, sourceHeight }
 
@@ -142,6 +243,8 @@ export const renderSlice = (
   } else {
     ctx.drawImage(offscreen, transform.drawX, transform.drawY, transform.drawW, transform.drawH)
   }
+
+  // ── Annotation layers ──
 
   // Helper: map slice-space mark to canvas coordinates
   const markToCx = (mark: { x: number; y: number }) =>
@@ -171,90 +274,114 @@ export const renderSlice = (
     const addMarks = marks.filter((m) => !m.eraser)
     if (!addMarks.length) return
 
-    if (layer.type === 'manual') {
-      target.fillStyle = `${layer.color}99`
-      target.beginPath()
-      for (const mark of addMarks) {
-        const cx = markToCx(mark)
-        const cy = markToCy(mark)
-        const radius = Math.max(mark.radius * radiusScale, 1)
-        target.moveTo(cx + radius, cy)
-        target.arc(cx, cy, radius, 0, Math.PI * 2)
+    // Separate contour marks (AI-generated) from circle/stroke marks (hand-drawn)
+    const contourMarks = addMarks.filter((m) => m.contour && m.contour.length > 1)
+    const strokeMarks = addMarks.filter((m) => !m.contour || m.contour.length <= 1)
+
+    // ── Render contour marks as filled polygons (works for any layer type) ──
+    for (const mark of contourMarks) {
+      const buildPath = () => {
+        target.beginPath()
+        const first = mark.contour![0]!
+        target.moveTo(
+          useRotated ? toCanvasX(first.y) : toCanvasX(first.x),
+          useRotated ? toCanvasY(first.x) : toCanvasY(first.y),
+        )
+        for (let i = 1; i < mark.contour!.length; i++) {
+          const pt = mark.contour![i]!
+          target.lineTo(
+            useRotated ? toCanvasX(pt.y) : toCanvasX(pt.x),
+            useRotated ? toCanvasY(pt.x) : toCanvasY(pt.y),
+          )
+        }
+        target.closePath()
       }
+      if (isHighlighted) {
+        target.strokeStyle = 'rgba(255, 255, 255, 0.35)'
+        target.lineWidth = 5
+        buildPath()
+        target.stroke()
+      }
+      target.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
+      target.strokeStyle = layer.color
+      target.lineWidth = isHighlighted ? 2.5 : 1.5
+      buildPath()
       target.fill()
-      return
+      target.stroke()
     }
 
-    for (const mark of addMarks) {
-      if (mark.contour && mark.contour.length > 1) {
-        const buildPath = () => {
-          target.beginPath()
-          const first = mark.contour![0]!
-          target.moveTo(
-            useRotated ? toCanvasX(first.y) : toCanvasX(first.x),
-            useRotated ? toCanvasY(first.x) : toCanvasY(first.y),
-          )
-          for (let i = 1; i < mark.contour!.length; i++) {
-            const pt = mark.contour![i]!
-            target.lineTo(
-              useRotated ? toCanvasX(pt.y) : toCanvasX(pt.x),
-              useRotated ? toCanvasY(pt.x) : toCanvasY(pt.y),
-            )
-          }
-          target.closePath()
-        }
-        if (isHighlighted) {
-          target.strokeStyle = 'rgba(255, 255, 255, 0.35)'
-          target.lineWidth = 5
-          buildPath()
-          target.stroke()
-        }
-        target.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
-        target.strokeStyle = layer.color
-        target.lineWidth = isHighlighted ? 2.5 : 1.5
-        buildPath()
-        target.fill()
-        target.stroke()
-      } else {
+    // ── Render hand-drawn marks as smooth connected strokes ──
+    if (strokeMarks.length > 0) {
+      const avgRadius = strokeMarks.reduce((s, m) => s + m.radius, 0) / strokeMarks.length
+      const lineWidth = Math.max(avgRadius * radiusScale * 2, 2)
+      const gapThreshold = avgRadius * 4 // break into new sub-path if gap is large
+
+      target.strokeStyle = `${layer.color}cc`
+      target.lineWidth = lineWidth
+      target.lineCap = 'round'
+      target.lineJoin = 'round'
+      target.beginPath()
+
+      for (let i = 0; i < strokeMarks.length; i++) {
+        const mark = strokeMarks[i]!
         const cx = markToCx(mark)
         const cy = markToCy(mark)
-        const radius = mark.radius * radiusScale
-        if (isHighlighted) {
-          target.strokeStyle = 'rgba(255, 255, 255, 0.35)'
-          target.lineWidth = 5
-          target.beginPath()
-          target.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
-          target.stroke()
+        if (i === 0) {
+          target.moveTo(cx, cy)
+        } else {
+          const prev = strokeMarks[i - 1]!
+          const dx = mark.x - prev.x
+          const dy = mark.y - prev.y
+          if (Math.hypot(dx, dy) > gapThreshold) {
+            target.moveTo(cx, cy)
+          } else {
+            target.lineTo(cx, cy)
+          }
         }
-        target.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
-        target.strokeStyle = layer.color
-        target.lineWidth = isHighlighted ? 2.5 : 1.5
-        target.beginPath()
-        target.arc(cx, cy, Math.max(radius, 3), 0, Math.PI * 2)
-        target.fill()
-        target.stroke()
       }
+      target.stroke()
     }
   }
 
-  const drawEraserMarks = (
+  const drawEraseMarks = (
     target: CanvasRenderingContext2D,
     marks: typeof layers[0]['annotations'],
     radiusScale: number,
   ) => {
     const eraseMarks = marks.filter((m) => m.eraser)
     if (!eraseMarks.length) return
+
+    target.save()
     target.globalCompositeOperation = 'destination-out'
+    target.strokeStyle = 'rgba(0,0,0,1)'
+    target.lineCap = 'round'
+    target.lineJoin = 'round'
+
+    const avgRadius = eraseMarks.reduce((s, m) => s + m.radius, 0) / eraseMarks.length
+    const lineWidth = Math.max(avgRadius * radiusScale * 2, 2)
+    const gapThreshold = avgRadius * 4
+
+    target.lineWidth = lineWidth
     target.beginPath()
-    for (const mark of eraseMarks) {
+    for (let i = 0; i < eraseMarks.length; i++) {
+      const mark = eraseMarks[i]!
       const cx = markToCx(mark)
       const cy = markToCy(mark)
-      const radius = Math.max(mark.radius * radiusScale, 1)
-      target.moveTo(cx + radius, cy)
-      target.arc(cx, cy, radius, 0, Math.PI * 2)
+      if (i === 0) {
+        target.moveTo(cx, cy)
+      } else {
+        const prev = eraseMarks[i - 1]!
+        const dx = mark.x - prev.x
+        const dy = mark.y - prev.y
+        if (Math.hypot(dx, dy) > gapThreshold) {
+          target.moveTo(cx, cy)
+        } else {
+          target.lineTo(cx, cy)
+        }
+      }
     }
-    target.fill()
-    target.globalCompositeOperation = 'source-over'
+    target.stroke()
+    target.restore()
   }
 
   for (const layer of layers.filter((entry) => entry.visible)) {
@@ -263,17 +390,17 @@ export const renderSlice = (
 
     const radiusScale = useRotated ? transform.drawW / sourceHeight : transform.drawW / sourceWidth
     const isHighlighted = layer.id === highlightLayerId
-    const hasErasers = marks.some((m) => m.eraser)
+    const hasEraserMarks = marks.some((m) => m.eraser)
 
-    if (hasErasers) {
-      // Use offscreen canvas so eraser compositing doesn't affect the background
-      const tmp = document.createElement('canvas')
-      tmp.width = canvas.width
-      tmp.height = canvas.height
-      const tCtx = tmp.getContext('2d')!
-      drawAddMarks(tCtx, marks, layer, radiusScale, isHighlighted)
-      drawEraserMarks(tCtx, marks, radiusScale)
-      ctx.drawImage(tmp, 0, 0)
+    if (hasEraserMarks) {
+      // Use offscreen canvas so eraser marks don't cut through the background image
+      const offCanvas = document.createElement('canvas')
+      offCanvas.width = canvas.width
+      offCanvas.height = canvas.height
+      const offCtx = offCanvas.getContext('2d')!
+      drawAddMarks(offCtx, marks, layer, radiusScale, isHighlighted)
+      drawEraseMarks(offCtx, marks, radiusScale)
+      ctx.drawImage(offCanvas, 0, 0)
     } else {
       drawAddMarks(ctx, marks, layer, radiusScale, isHighlighted)
     }
