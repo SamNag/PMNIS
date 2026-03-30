@@ -100,7 +100,6 @@ export const renderSlice = (
   layers: AnnotationLayer[],
   showMaskOverlay: boolean,
   rotateToFill = false,
-  highlightLayerId?: string,
 ): RenderTransform => {
   fitCanvasToDevicePixelRatio(canvas)
   const ctx = canvas.getContext('2d')
@@ -264,92 +263,75 @@ export const renderSlice = (
       ? transform.drawY + (py / sourceWidth) * transform.drawH
       : transform.drawY + (py / sourceHeight) * transform.drawH
 
-  const drawAddMarks = (
+  const drawContourMark = (
     target: CanvasRenderingContext2D,
-    marks: typeof layers[0]['annotations'],
+    mark: AnnotationLayer['annotations'][number],
     layer: AnnotationLayer,
-    radiusScale: number,
-    isHighlighted: boolean,
   ) => {
-    const addMarks = marks.filter((m) => !m.eraser)
-    if (!addMarks.length) return
+    if (!mark.contour || mark.contour.length <= 1) return
 
-    // Separate contour marks (AI-generated) from circle/stroke marks (hand-drawn)
-    const contourMarks = addMarks.filter((m) => m.contour && m.contour.length > 1)
-    const strokeMarks = addMarks.filter((m) => !m.contour || m.contour.length <= 1)
-
-    // ── Render contour marks as filled polygons (works for any layer type) ──
-    for (const mark of contourMarks) {
-      const buildPath = () => {
-        target.beginPath()
-        const first = mark.contour![0]!
-        target.moveTo(
-          useRotated ? toCanvasX(first.y) : toCanvasX(first.x),
-          useRotated ? toCanvasY(first.x) : toCanvasY(first.y),
-        )
-        for (let i = 1; i < mark.contour!.length; i++) {
-          const pt = mark.contour![i]!
-          target.lineTo(
-            useRotated ? toCanvasX(pt.y) : toCanvasX(pt.x),
-            useRotated ? toCanvasY(pt.x) : toCanvasY(pt.y),
-          )
-        }
-        target.closePath()
-      }
-      if (isHighlighted) {
-        target.strokeStyle = 'rgba(255, 255, 255, 0.35)'
-        target.lineWidth = 5
-        buildPath()
-        target.stroke()
-      }
-      target.fillStyle = isHighlighted ? `${layer.color}55` : `${layer.color}33`
-      target.strokeStyle = layer.color
-      target.lineWidth = isHighlighted ? 2.5 : 1.5
-      buildPath()
-      target.fill()
-      target.stroke()
+    target.beginPath()
+    const first = mark.contour[0]!
+    target.moveTo(
+      useRotated ? toCanvasX(first.y) : toCanvasX(first.x),
+      useRotated ? toCanvasY(first.x) : toCanvasY(first.y),
+    )
+    for (let i = 1; i < mark.contour.length; i++) {
+      const pt = mark.contour[i]!
+      target.lineTo(
+        useRotated ? toCanvasX(pt.y) : toCanvasX(pt.x),
+        useRotated ? toCanvasY(pt.x) : toCanvasY(pt.y),
+      )
     }
-
-    // ── Render hand-drawn marks as smooth connected strokes ──
-    if (strokeMarks.length > 0) {
-      const avgRadius = strokeMarks.reduce((s, m) => s + m.radius, 0) / strokeMarks.length
-      const lineWidth = Math.max(avgRadius * radiusScale * 2, 2)
-      const gapThreshold = avgRadius * 4 // break into new sub-path if gap is large
-
-      target.strokeStyle = `${layer.color}cc`
-      target.lineWidth = lineWidth
-      target.lineCap = 'round'
-      target.lineJoin = 'round'
-      target.beginPath()
-
-      for (let i = 0; i < strokeMarks.length; i++) {
-        const mark = strokeMarks[i]!
-        const cx = markToCx(mark)
-        const cy = markToCy(mark)
-        if (i === 0) {
-          target.moveTo(cx, cy)
-        } else {
-          const prev = strokeMarks[i - 1]!
-          const dx = mark.x - prev.x
-          const dy = mark.y - prev.y
-          if (Math.hypot(dx, dy) > gapThreshold) {
-            target.moveTo(cx, cy)
-          } else {
-            target.lineTo(cx, cy)
-          }
-        }
-      }
-      target.stroke()
-    }
+    target.closePath()
+    target.fillStyle = `${layer.color}cc`
+    target.fill()
   }
 
-  const drawEraseMarks = (
+  const drawStrokeRun = (
     target: CanvasRenderingContext2D,
-    marks: typeof layers[0]['annotations'],
+    marks: AnnotationLayer['annotations'],
+    layer: AnnotationLayer,
     radiusScale: number,
   ) => {
-    const eraseMarks = marks.filter((m) => m.eraser)
-    if (!eraseMarks.length) return
+    if (!marks.length) return
+
+    const avgRadius = marks.reduce((sum, mark) => sum + mark.radius, 0) / marks.length
+    const lineWidth = Math.max(avgRadius * radiusScale * 2, 2)
+    const gapThreshold = avgRadius * 4
+
+    target.strokeStyle = `${layer.color}cc`
+    target.lineWidth = lineWidth
+    target.lineCap = 'round'
+    target.lineJoin = 'round'
+    target.beginPath()
+
+    for (let i = 0; i < marks.length; i++) {
+      const mark = marks[i]!
+      const cx = markToCx(mark)
+      const cy = markToCy(mark)
+      if (i === 0) {
+        target.moveTo(cx, cy)
+      } else {
+        const prev = marks[i - 1]!
+        const dx = mark.x - prev.x
+        const dy = mark.y - prev.y
+        if (Math.hypot(dx, dy) > gapThreshold) {
+          target.moveTo(cx, cy)
+        } else {
+          target.lineTo(cx, cy)
+        }
+      }
+    }
+    target.stroke()
+  }
+
+  const eraseStrokeRun = (
+    target: CanvasRenderingContext2D,
+    marks: AnnotationLayer['annotations'],
+    radiusScale: number,
+  ) => {
+    if (!marks.length) return
 
     target.save()
     target.globalCompositeOperation = 'destination-out'
@@ -357,20 +339,20 @@ export const renderSlice = (
     target.lineCap = 'round'
     target.lineJoin = 'round'
 
-    const avgRadius = eraseMarks.reduce((s, m) => s + m.radius, 0) / eraseMarks.length
+    const avgRadius = marks.reduce((sum, mark) => sum + mark.radius, 0) / marks.length
     const lineWidth = Math.max(avgRadius * radiusScale * 2, 2)
     const gapThreshold = avgRadius * 4
 
     target.lineWidth = lineWidth
     target.beginPath()
-    for (let i = 0; i < eraseMarks.length; i++) {
-      const mark = eraseMarks[i]!
+    for (let i = 0; i < marks.length; i++) {
+      const mark = marks[i]!
       const cx = markToCx(mark)
       const cy = markToCy(mark)
       if (i === 0) {
         target.moveTo(cx, cy)
       } else {
-        const prev = eraseMarks[i - 1]!
+        const prev = marks[i - 1]!
         const dx = mark.x - prev.x
         const dy = mark.y - prev.y
         if (Math.hypot(dx, dy) > gapThreshold) {
@@ -384,12 +366,49 @@ export const renderSlice = (
     target.restore()
   }
 
+  const drawMarksInOrder = (
+    target: CanvasRenderingContext2D,
+    marks: AnnotationLayer['annotations'],
+    layer: AnnotationLayer,
+    radiusScale: number,
+  ) => {
+    let strokeRun: AnnotationLayer['annotations'] = []
+    let runMode: 'add' | 'erase' | null = null
+
+    const flushStrokeRun = () => {
+      if (!strokeRun.length || !runMode) return
+      if (runMode === 'erase') {
+        eraseStrokeRun(target, strokeRun, radiusScale)
+      } else {
+        drawStrokeRun(target, strokeRun, layer, radiusScale)
+      }
+      strokeRun = []
+      runMode = null
+    }
+
+    for (const mark of marks) {
+      if (mark.contour && mark.contour.length > 1 && !mark.eraser) {
+        flushStrokeRun()
+        drawContourMark(target, mark, layer)
+        continue
+      }
+
+      const nextMode: 'add' | 'erase' = mark.eraser ? 'erase' : 'add'
+      if (runMode && runMode !== nextMode) {
+        flushStrokeRun()
+      }
+      runMode = nextMode
+      strokeRun.push(mark)
+    }
+
+    flushStrokeRun()
+  }
+
   for (const layer of layers.filter((entry) => entry.visible)) {
     const marks = getSliceFromLayer(layer, view, sliceIndex)
     if (!marks.length) continue
 
     const radiusScale = useRotated ? transform.drawW / sourceHeight : transform.drawW / sourceWidth
-    const isHighlighted = layer.id === highlightLayerId
     const hasEraserMarks = marks.some((m) => m.eraser)
 
     if (hasEraserMarks) {
@@ -398,11 +417,10 @@ export const renderSlice = (
       offCanvas.width = canvas.width
       offCanvas.height = canvas.height
       const offCtx = offCanvas.getContext('2d')!
-      drawAddMarks(offCtx, marks, layer, radiusScale, isHighlighted)
-      drawEraseMarks(offCtx, marks, radiusScale)
+      drawMarksInOrder(offCtx, marks, layer, radiusScale)
       ctx.drawImage(offCanvas, 0, 0)
     } else {
-      drawAddMarks(ctx, marks, layer, radiusScale, isHighlighted)
+      drawMarksInOrder(ctx, marks, layer, radiusScale)
     }
   }
 

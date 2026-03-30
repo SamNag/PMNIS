@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Eye } from 'lucide-vue-next'
 import { useViewerStore } from '../stores/viewerStore'
-import type { ViewType, ViewportState, BoundingBox } from '../types/viewer'
+import type { ViewType, ViewportState } from '../types/viewer'
 import { fitCanvasToDevicePixelRatio, renderSlice, screenToSlice, type RenderTransform } from '../lib/rendering'
 import { renderThreeDVolume, destroyThreeDVolume } from '../lib/rendering3d'
 import { getSliceSize, getViewMaxSlice } from '../lib/volume'
@@ -11,7 +11,6 @@ import { getSliceSize, getViewMaxSlice } from '../lib/volume'
 const props = defineProps<{
   viewport: ViewportState
   isThumbnail?: boolean
-  isFullscreen?: boolean
 }>()
 
 const store = useViewerStore()
@@ -23,15 +22,11 @@ const {
   renderSettings,
   annotationLayers,
   annotationVersion,
-  showTumorMask,
-  compareOverlay,
   isPatientLoaded,
   brushSize,
   activeTool,
   activeLayer,
   canAnnotate,
-  aiDetections,
-  selectedDetectionId,
   aiBoundingBox,
 } = storeToRefs(store)
 
@@ -57,7 +52,7 @@ const lastDrawnPoint = ref<{ x: number; y: number; slice: number; view: Exclude<
 const drawingBox = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
 let resizeObserver: ResizeObserver | null = null
 
-// Fullscreen 3D clip slider state
+// Single-view 3D clip slider state
 const fsClipAxial = ref(0)
 const fsClipCoronal = ref(0)
 const fsClipSagittal = ref(0)
@@ -66,10 +61,8 @@ const maxAxialSlice = computed(() => volumeData.value ? volumeData.value.depth -
 const maxCoronalSlice = computed(() => volumeData.value ? volumeData.value.height - 1 : 0)
 const maxSagittalSlice = computed(() => volumeData.value ? volumeData.value.width - 1 : 0)
 
-// Show clip sliders when 3D view has no sibling viewports (fullscreen or single view)
-const showClipSliders = computed(() =>
-  props.isFullscreen || (layout.value !== '2x2' && layout.value !== '3x1'),
-)
+// Show clip sliders only when the user is focused on a single viewport.
+const showClipSliders = computed(() => layout.value === 'single')
 
 const clip3D = computed(() => {
   if (!volumeData.value) return { x: 1, y: 1, z: 1 }
@@ -118,14 +111,7 @@ const visibleLayers = computed(() => {
       result.push(layer)
     }
   }
-  if (compareOverlay.value) return result.filter((l) => l.type === 'ai')
   return result
-})
-
-const highlightLayerId = computed(() => {
-  if (!selectedDetectionId.value) return undefined
-  const detection = aiDetections.value.find((d) => d.id === selectedDetectionId.value)
-  return detection?.layerId
 })
 
 const maxSlice = computed(() => {
@@ -206,9 +192,8 @@ const draw2D = () => {
     volumeData.value,
     renderSettings.value,
     visibleLayers.value,
-    showTumorMask.value,
     false,
-    highlightLayerId.value,
+    false,
   )
 
   // Render bounding box overlay
@@ -281,7 +266,7 @@ const draw3D = () => {
     clipY,
     clipZ,
     visibleLayers.value,
-    showTumorMask.value,
+    false,
   )
 }
 
@@ -415,11 +400,7 @@ const handleWheel = (event: WheelEvent) => {
   }
 
   const delta = event.deltaY > 0 ? 1 : -1
-  if (props.isFullscreen) {
-    store.updateFullscreenSlice(delta)
-  } else {
-    store.updateSlice(props.viewport.id, delta)
-  }
+  store.updateSlice(props.viewport.id, delta)
 }
 
 const mapPointerToSlice = (event: PointerEvent): { x: number; y: number; mappedX: number; mappedY: number } | null => {
@@ -619,11 +600,7 @@ const handlePointerLeave = () => {
 const handleViewAssignment = (event: Event) => {
   const target = event.target as HTMLSelectElement
   const view = target.value as ViewType
-  if (props.isFullscreen) {
-    store.setFullscreenView(view)
-  } else {
-    store.assignViewToViewport(props.viewport.id, view)
-  }
+  store.assignViewToViewport(props.viewport.id, view)
 }
 
 onMounted(() => {
@@ -651,9 +628,6 @@ watch(
     () => props.viewport.sliceIndex,
     volumeData,
     renderSettings,
-    showTumorMask,
-    compareOverlay,
-    selectedDetectionId,
     clip3D,
     aiBoundingBox,
   ],
@@ -772,22 +746,22 @@ watch(activeViewportId, (next) => {
     <!-- 3D clip sliders (fullscreen or single view) -->
     <div
       v-if="viewport.assignedView === 'threeD' && isPatientLoaded && !isThumbnail && showClipSliders"
-      class="absolute bottom-3 right-3 z-20 flex w-56 flex-col gap-1.5 rounded-lg bg-zinc-950/70 px-3 py-2 backdrop-blur-sm"
+      class="absolute bottom-3 left-3 right-3 z-20 ml-auto flex max-w-sm flex-col gap-1.5 rounded-lg bg-zinc-950/70 px-3 py-2 backdrop-blur-sm"
     >
-      <div class="flex items-center gap-2">
-        <span class="w-12 text-[10px] font-medium text-zinc-300">Axial</span>
-        <input type="range" class="flex-1 accent-zinc-200" min="0" :max="maxAxialSlice" :value="fsClipAxial" @input="fsClipAxial = Number(($event.target as HTMLInputElement).value)" />
-        <span class="w-6 text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipAxial }}</span>
+      <div class="grid grid-cols-[4.75rem_minmax(0,1fr)_3rem] items-center gap-2">
+        <span class="text-[10px] font-medium text-zinc-300">Axial</span>
+        <input type="range" class="min-w-0 w-full accent-zinc-200" min="0" :max="maxAxialSlice" :value="fsClipAxial" @input="fsClipAxial = Number(($event.target as HTMLInputElement).value)" />
+        <span class="text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipAxial }}</span>
       </div>
-      <div class="flex items-center gap-2">
-        <span class="w-12 text-[10px] font-medium text-zinc-300">Coronal</span>
-        <input type="range" class="flex-1 accent-zinc-200" min="0" :max="maxCoronalSlice" :value="fsClipCoronal" @input="fsClipCoronal = Number(($event.target as HTMLInputElement).value)" />
-        <span class="w-6 text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipCoronal }}</span>
+      <div class="grid grid-cols-[4.75rem_minmax(0,1fr)_3rem] items-center gap-2">
+        <span class="text-[10px] font-medium text-zinc-300">Coronal</span>
+        <input type="range" class="min-w-0 w-full accent-zinc-200" min="0" :max="maxCoronalSlice" :value="fsClipCoronal" @input="fsClipCoronal = Number(($event.target as HTMLInputElement).value)" />
+        <span class="text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipCoronal }}</span>
       </div>
-      <div class="flex items-center gap-2">
-        <span class="w-12 text-[10px] font-medium text-zinc-300">Sagittal</span>
-        <input type="range" class="flex-1 accent-zinc-200" min="0" :max="maxSagittalSlice" :value="fsClipSagittal" @input="fsClipSagittal = Number(($event.target as HTMLInputElement).value)" />
-        <span class="w-6 text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipSagittal }}</span>
+      <div class="grid grid-cols-[4.75rem_minmax(0,1fr)_3rem] items-center gap-2">
+        <span class="text-[10px] font-medium text-zinc-300">Sagittal</span>
+        <input type="range" class="min-w-0 w-full accent-zinc-200" min="0" :max="maxSagittalSlice" :value="fsClipSagittal" @input="fsClipSagittal = Number(($event.target as HTMLInputElement).value)" />
+        <span class="text-right text-[10px] tabular-nums text-zinc-400">{{ fsClipSagittal }}</span>
       </div>
       <div class="pointer-events-none text-[9px] text-zinc-500">Drag to pan · Right-click to rotate · Scroll to zoom</div>
     </div>
@@ -803,7 +777,7 @@ watch(activeViewportId, (next) => {
         min="0"
         :max="maxSlice"
         :value="viewport.sliceIndex"
-        @input="isFullscreen ? store.setFullscreenSlice(Number(($event.target as HTMLInputElement).value)) : store.setSlice(viewport.id, Number(($event.target as HTMLInputElement).value))"
+        @input="store.setSlice(viewport.id, Number(($event.target as HTMLInputElement).value))"
       />
     </div>
   </article>

@@ -3,7 +3,8 @@ import { defineStore } from 'pinia'
 import { mockPatient } from '../data/mockPatient'
 import { createMockBrainVolume } from '../data/mockVolume'
 import { makeId } from '../lib/ids'
-import { loadNiftiFile } from '../lib/niftiLoader'
+import { defaultLayerColors } from '../lib/layerColors'
+import { loadMedicalFile } from '../lib/medicalLoader'
 import { getDefaultSliceForView, getViewMaxSlice } from '../lib/volume'
 import type {
   AiDetection,
@@ -12,11 +13,7 @@ import type {
   AnnotationLayer,
   AnnotationMark,
   BoundingBox,
-  EditAcceptAnswer,
-  FeedbackEntry,
-  FeedbackPopupState,
   LayoutMode,
-  RejectReason,
   RenderSettings,
   ToolId,
   ToolbarSection,
@@ -28,11 +25,14 @@ import type {
 const manualTools: ToolId[] = ['brush', 'eraser']
 const instantTools: ToolId[] = ['fit', 'reset', 'invert', 'clearSelection']
 const MAX_HISTORY_SIZE = 80
+const TRI_PLANAR_LAYOUT_ORDER: Array<Exclude<ViewType, 'threeD'>> = ['axial', 'coronal', 'sagittal']
 
-const colors = ['#f97316', '#06b6d4', '#f43f5e', '#22c55e', '#8b5cf6', '#0ea5e9', '#eab308']
+const colors = defaultLayerColors
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 const cloneAnnotations = (marks: AnnotationMark[]): AnnotationMark[] => marks.map((mark) => ({ ...mark }))
 const detectionColors = ['#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899']
+const randomBetween = (min: number, max: number): number => min + Math.random() * (max - min)
+const randomInt = (min: number, max: number): number => Math.round(randomBetween(min, max))
 
 /** Deterministic organic noise for contour deformation. */
 const contourNoise = (theta: number, sliceOffset: number, seed: number): number =>
@@ -116,9 +116,12 @@ const defaultRenderSettings = (): RenderSettings => ({
 })
 
 const defaultViewports = (): ViewportState[] => [
-  { id: 'vp-1', label: 'Viewport 1', assignedView: 'axial', sliceIndex: 36 },
-  { id: 'vp-2', label: 'Viewport 2', assignedView: 'sagittal', sliceIndex: 64 },
-  { id: 'vp-3', label: 'Viewport 3', assignedView: 'coronal', sliceIndex: 64 },
+  ...TRI_PLANAR_LAYOUT_ORDER.map((view, index) => ({
+    id: `vp-${index + 1}`,
+    label: `Viewport ${index + 1}`,
+    assignedView: view,
+    sliceIndex: 0,
+  })),
   { id: 'vp-4', label: 'Viewport 4', assignedView: 'threeD', sliceIndex: 0 },
 ]
 
@@ -130,12 +133,10 @@ export const useViewerStore = defineStore('viewer', () => {
   const mriLoaded = ref(false)
   const tumorMaskLoaded = ref(false)
 
-  const layout = ref<LayoutMode>('2x2')
+  const layout = ref<LayoutMode>('3x1')
   const activeViewportId = ref('vp-1')
   const viewports = ref<ViewportState[]>(defaultViewports())
   const isFullscreenMode = ref(false)
-  const fullscreenViewportId = ref<string | null>(null)
-  const fullscreenViewportState = ref<ViewportState | null>(null)
 
   const activeTool = ref<ToolId>('zoom')
   const activeToolbarSection = ref<ToolbarSection>('image')
@@ -150,13 +151,10 @@ export const useViewerStore = defineStore('viewer', () => {
   const manualFuture = ref<Record<string, AnnotationMark[][]>>({})
   /** Shallow counter bumped whenever annotations change, to avoid deep-watching annotationLayers. */
   const annotationVersion = ref(0)
-  /** True while the user is actively drawing (between beginManualEdit and endManualEdit). */
-  let drawingActive = false
 
   const aiMode = ref<AiMode>('full')
   const aiState = ref<AiState>('idle')
   const aiProgress = ref(0)
-  const compareOverlay = ref(false)
   const aiDetections = ref<AiDetection[]>([])
   const selectedDetectionId = ref<string | null>(null)
   const editingDetectionId = ref<string | null>(null)
@@ -164,12 +162,6 @@ export const useViewerStore = defineStore('viewer', () => {
   const aiRunMode = ref<AiMode | null>(null)
   /** Bounding box drawn by user for semi-auto AI mode. */
   const aiBoundingBox = ref<BoundingBox | null>(null)
-
-  // ── Feedback ──
-  const feedbackPopup = ref<FeedbackPopupState>({ visible: false, type: 'full-auto-rating' })
-  const feedbackEntries = ref<FeedbackEntry[]>([])
-  /** Timer handle for the delayed full-auto feedback popup. */
-  let fullAutoFeedbackTimer: ReturnType<typeof setTimeout> | null = null
   const activeViewport = computed<ViewportState | null>(
     () => viewports.value.find((viewport) => viewport.id === activeViewportId.value) ?? viewports.value[0] ?? null,
   )
@@ -188,10 +180,28 @@ export const useViewerStore = defineStore('viewer', () => {
   const selectedLayerHasSelection = computed(() => (activeLayer.value?.annotations.length ?? 0) > 0)
 
   const visibleViewports = computed(() => {
-    if (layout.value === '2x2') return viewports.value
     if (layout.value === '3x1') return viewports.value.slice(0, 3)
     return activeViewport.value ? [activeViewport.value] : []
   })
+
+  const normalizeTriPlanarViewports = () => {
+    const viewportByView = new Map<ViewType, ViewportState>()
+    for (const viewport of viewports.value) {
+      if (!viewportByView.has(viewport.assignedView)) {
+        viewportByView.set(viewport.assignedView, viewport)
+      }
+    }
+
+    TRI_PLANAR_LAYOUT_ORDER.forEach((view, index) => {
+      const viewport = viewports.value[index]
+      if (!viewport) return
+
+      viewport.assignedView = view
+      viewport.sliceIndex = viewportByView.get(view)?.sliceIndex ?? (
+        volumeData.value ? getDefaultSliceForView(view, volumeData.value) : viewport.sliceIndex
+      )
+    })
+  }
 
   const isLayerEditable = (layer: AnnotationLayer): boolean => {
     if (layer.type === 'manual') return true
@@ -227,6 +237,9 @@ export const useViewerStore = defineStore('viewer', () => {
   })
 
   const getNextLayerColor = (): string => colors[annotationLayers.value.length % colors.length] ?? '#0ea5e9'
+  const getRenderableLayerCount = (): number =>
+    annotationLayers.value.reduce((count, layer) => count + (layer.type === 'folder' ? layer.children?.length ?? 0 : 1), 0)
+  const getNextLayerName = (): string => `Tumor ${getRenderableLayerCount() + 1}`
 
   const getManualHistoryBucket = (layerId: string): AnnotationMark[][] => {
     const bucket = manualHistory.value[layerId]
@@ -254,22 +267,29 @@ export const useViewerStore = defineStore('viewer', () => {
     manualFuture.value[layer.id] = []
   }
 
-  const loadPatient = () => {
-    const volume = createMockBrainVolume()
+  const getTodayDate = (): string => new Date().toISOString().split('T')[0] || ''
+
+  const stripUploadedFileExtension = (fileName: string): string =>
+    fileName.replace(/\.(nii(\.gz)?|dcm|dicom)$/i, '')
+
+  const initializeLoadedStudy = (
+    volume: VolumeData,
+    patient: typeof mockPatient,
+    options: { tumorMaskLoaded: boolean; showTumorMask: boolean },
+  ) => {
     volumeData.value = volume
-    currentPatient.value = mockPatient
+    currentPatient.value = patient
 
     isPatientLoaded.value = true
     mriLoaded.value = true
-    tumorMaskLoaded.value = true
-    showTumorMask.value = true
+    tumorMaskLoaded.value = options.tumorMaskLoaded
+    showTumorMask.value = options.showTumorMask
 
     renderSettings.value = defaultRenderSettings()
     annotationLayers.value = []
     activeLayerId.value = null
     manualHistory.value = {}
     manualFuture.value = {}
-    compareOverlay.value = false
     aiState.value = 'idle'
     aiProgress.value = 0
     brushSize.value = 2.5
@@ -278,9 +298,14 @@ export const useViewerStore = defineStore('viewer', () => {
     editingDetectionId.value = null
     aiRunMode.value = null
     aiBoundingBox.value = null
+    activeToolbarSection.value = 'image'
+    activeTool.value = 'zoom'
 
     viewports.value = defaultViewports().map((viewport) => {
-      if (viewport.assignedView === 'threeD') return viewport
+      if (viewport.assignedView === 'threeD') {
+        return { ...viewport, sliceIndex: 0 }
+      }
+
       return {
         ...viewport,
         sliceIndex: getDefaultSliceForView(viewport.assignedView, volume),
@@ -289,101 +314,42 @@ export const useViewerStore = defineStore('viewer', () => {
     activeViewportId.value = 'vp-1'
   }
 
-  const loadNiftiPatient = async (file: File, patientName?: string) => {
-    try {
-      const volume = await loadNiftiFile(file)
-      volumeData.value = volume
+  const loadPatient = () => {
+    const volume = createMockBrainVolume()
+    initializeLoadedStudy(volume, mockPatient, { tumorMaskLoaded: true, showTumorMask: false })
+  }
 
-      // Create a custom patient from the file
-      currentPatient.value = {
+  const loadMedicalPatient = async (file: File, patientName?: string) => {
+    const { volume, metadata } = await loadMedicalFile(file)
+
+    initializeLoadedStudy(
+      volume,
+      {
         id: makeId('patient'),
-        name: patientName || file.name.replace(/\.(nii|nii\.gz)$/, ''),
-        age: 0,
-        scanDate: new Date().toISOString().split('T')[0] || '', // Ensure scanDate is always a string
-        studyType: 'MRI',
-      }
-
-      isPatientLoaded.value = true
-      mriLoaded.value = true
-      tumorMaskLoaded.value = false
-      showTumorMask.value = false
-
-      renderSettings.value = defaultRenderSettings()
-      annotationLayers.value = []
-      activeLayerId.value = null
-      brushSize.value = 2.5
-      aiDetections.value = []
-      selectedDetectionId.value = null
-      editingDetectionId.value = null
-      aiRunMode.value = null
-      aiBoundingBox.value = null
-
-      viewports.value = defaultViewports().map((viewport) => {
-        if (viewport.assignedView === 'threeD') {
-          return { ...viewport, sliceIndex: 0 }
-        }
-        return {
-          ...viewport,
-          sliceIndex: getDefaultSliceForView(viewport.assignedView, volume),
-        }
-      })
-      activeViewportId.value = 'vp-1'
-    } catch (error) {
-      console.error('Failed to load NIfTI file:', error)
-    }
+        name: patientName || metadata.patientName || stripUploadedFileExtension(file.name) || file.name,
+        age: metadata.age ?? 0,
+        scanDate: metadata.scanDate ?? getTodayDate(),
+        studyType: metadata.studyType ?? 'MRI',
+      },
+      { tumorMaskLoaded: false, showTumorMask: false },
+    )
   }
 
   const setLayout = (next: LayoutMode) => {
     layout.value = next
+    if (next === '3x1') {
+      normalizeTriPlanarViewports()
+      if (!viewports.value.slice(0, 3).some((viewport) => viewport.id === activeViewportId.value)) {
+        activeViewportId.value = viewports.value[0]?.id ?? activeViewportId.value
+      }
+    }
   }
 
   const toggleFullscreenMode = (viewportId?: string) => {
-    if (isFullscreenMode.value) {
-      // Exit fullscreen
-      isFullscreenMode.value = false
-      fullscreenViewportId.value = null
-      fullscreenViewportState.value = null
-    } else {
-      // Enter fullscreen with the specified viewport or active viewport
-      const targetId = viewportId ?? activeViewportId.value
-      const sourceViewport = viewports.value.find(vp => vp.id === targetId)
-      if (sourceViewport) {
-        // Create a copy of the viewport for fullscreen mode
-        fullscreenViewportState.value = {
-          ...sourceViewport,
-          id: 'fullscreen-vp',
-          label: 'Fullscreen',
-        }
-      }
-      isFullscreenMode.value = true
-      fullscreenViewportId.value = targetId
+    if (viewportId) {
+      activeViewportId.value = viewportId
     }
-  }
-
-  const switchFullscreenViewport = (viewportId: string) => {
-    if (!isFullscreenMode.value) return
-    fullscreenViewportId.value = viewportId
-    activeViewportId.value = viewportId
-  }
-
-  const setFullscreenView = (view: ViewType) => {
-    if (!isFullscreenMode.value || !fullscreenViewportState.value) return
-    fullscreenViewportState.value.assignedView = view
-    if (volumeData.value) {
-      fullscreenViewportState.value.sliceIndex = getDefaultSliceForView(view, volumeData.value)
-    }
-  }
-
-  const setFullscreenSlice = (value: number) => {
-    if (!fullscreenViewportState.value || !volumeData.value) return
-    const maxSlice = getViewMaxSlice(fullscreenViewportState.value.assignedView, volumeData.value)
-    fullscreenViewportState.value.sliceIndex = Math.max(0, Math.min(maxSlice, value))
-  }
-
-  const updateFullscreenSlice = (delta: number) => {
-    if (!fullscreenViewportState.value || !volumeData.value) return
-    const maxSlice = getViewMaxSlice(fullscreenViewportState.value.assignedView, volumeData.value)
-    fullscreenViewportState.value.sliceIndex = Math.max(0, Math.min(maxSlice, fullscreenViewportState.value.sliceIndex + delta))
+    isFullscreenMode.value = !isFullscreenMode.value
   }
 
   const setActiveViewport = (viewportId: string) => {
@@ -495,34 +461,22 @@ export const useViewerStore = defineStore('viewer', () => {
   }
 
   const createManualLayer = () => {
-    const childId = makeId('layer')
+    const layerId = makeId('layer')
     const color = getNextLayerColor()
 
-    const child: AnnotationLayer = {
-      id: childId,
-      name: 'Finding 1',
+    const layer: AnnotationLayer = {
+      id: layerId,
+      name: getNextLayerName(),
       type: 'manual',
       visible: true,
       color,
       annotations: [],
     }
 
-    const folder: AnnotationLayer = {
-      id: makeId('folder'),
-      name: `Session ${annotationLayers.value.length + 1}`,
-      type: 'folder',
-      visible: true,
-      color,
-      annotations: [],
-      children: [child],
-      expanded: true,
-      timestamp: Date.now(),
-    }
-
-    annotationLayers.value.unshift(folder)
-    activeLayerId.value = childId
-    getManualHistoryBucket(childId)
-    getManualFutureBucket(childId)
+    annotationLayers.value.unshift(layer)
+    activeLayerId.value = layerId
+    getManualHistoryBucket(layerId)
+    getManualFutureBucket(layerId)
   }
 
   /** Find a layer by id, searching also in folder children. */
@@ -561,7 +515,34 @@ export const useViewerStore = defineStore('viewer', () => {
     annotationVersion.value++
   }
 
+  const renameLayer = (layerId: string, nextName: string) => {
+    const layer = findLayerById(layerId)
+    const trimmed = nextName.trim()
+    if (!layer || !trimmed) return
+    layer.name = trimmed
+
+    const detection = aiDetections.value.find((item) => item.layerId === layerId)
+    if (detection) {
+      detection.name = trimmed
+    }
+  }
+
+  const setLayerColor = (layerId: string, nextColor: string) => {
+    const layer = findLayerById(layerId)
+    if (!layer || !nextColor) return
+    layer.color = nextColor
+
+    const detection = aiDetections.value.find((item) => item.layerId === layerId)
+    if (detection) {
+      detection.color = nextColor
+    }
+
+    annotationVersion.value++
+  }
+
   const deleteLayer = (layerId: string) => {
+    let parentFolderIdToRemove: string | null = null
+
     // Check if it's a top-level layer (including folder)
     const topLevel = annotationLayers.value.find((l) => l.id === layerId)
     if (topLevel) {
@@ -582,12 +563,19 @@ export const useViewerStore = defineStore('viewer', () => {
           const idx = folder.children.findIndex((c) => c.id === layerId)
           if (idx >= 0) {
             folder.children.splice(idx, 1)
+            if (folder.children.length === 0) {
+              parentFolderIdToRemove = folder.id
+            }
             delete manualHistory.value[layerId]
             delete manualFuture.value[layerId]
             break
           }
         }
       }
+    }
+
+    if (parentFolderIdToRemove) {
+      annotationLayers.value = annotationLayers.value.filter((layer) => layer.id !== parentFolderIdToRemove)
     }
 
     if (activeLayerId.value === layerId) {
@@ -625,11 +613,9 @@ export const useViewerStore = defineStore('viewer', () => {
     const layer = activeLayer.value
     if (!layer || !isLayerEditable(layer)) return
     pushManualHistorySnapshot(layer)
-    drawingActive = true
   }
 
   const endManualEdit = () => {
-    drawingActive = false
     annotationVersion.value++
   }
 
@@ -681,7 +667,7 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const startBoundingBoxDraw = () => {
     activeTool.value = 'boundingBox'
-    activeToolbarSection.value = 'ai'
+    activeToolbarSection.value = 'manual'
     aiBoundingBox.value = null
   }
 
@@ -692,15 +678,16 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const clearBoundingBox = () => {
     aiBoundingBox.value = null
+    if (activeTool.value === 'boundingBox') {
+      activeTool.value = 'zoom'
+    }
   }
 
   const setAiMode = (mode: AiMode) => {
     aiMode.value = mode
-    if (mode === 'full') aiBoundingBox.value = null
-  }
-
-  const setCompareOverlay = () => {
-    compareOverlay.value = !compareOverlay.value
+    if (mode === 'full') {
+      clearBoundingBox()
+    }
   }
 
   const selectDetection = (detectionId: string) => {
@@ -724,39 +711,48 @@ export const useViewerStore = defineStore('viewer', () => {
       }
     }
 
-    if (fullscreenViewportState.value) {
-      const fsView = fullscreenViewportState.value.assignedView
-      if (fsView === 'axial') fullscreenViewportState.value.sliceIndex = Math.round(detection.centerZ)
-      else if (fsView === 'coronal') fullscreenViewportState.value.sliceIndex = Math.round(detection.centerY)
-      else if (fsView === 'sagittal') fullscreenViewportState.value.sliceIndex = Math.round(detection.centerX)
-    }
   }
 
   const acceptDetection = (detectionId: string) => {
-    const detection = aiDetections.value.find((d) => d.id === detectionId)
+    const detectionIndex = aiDetections.value.findIndex((d) => d.id === detectionId)
+    const detection = detectionIndex >= 0 ? aiDetections.value[detectionIndex] : null
     if (!detection) return
-    const wasEdited = detection.wasEdited ?? false
-    detection.status = 'accepted'
-    if (editingDetectionId.value === detectionId) editingDetectionId.value = null
 
-    // If the user edited this detection before accepting, ask about the edit
-    if (wasEdited) {
-      showFeedbackPopup('semi-edit-accept', detection.id, detection.name)
+    const layer = findLayerById(detection.layerId)
+    if (layer) {
+      layer.type = 'manual'
+      activeLayerId.value = layer.id
+      getManualHistoryBucket(layer.id)
+      getManualFutureBucket(layer.id)
     }
+
+    aiDetections.value.splice(detectionIndex, 1)
+    if (editingDetectionId.value === detectionId) editingDetectionId.value = null
+    if (selectedDetectionId.value === detectionId) selectedDetectionId.value = null
+
+    if (!aiDetections.value.length) {
+      aiRunMode.value = null
+      aiState.value = 'idle'
+      aiProgress.value = 0
+    }
+
+    annotationVersion.value++
   }
 
   const rejectDetection = (detectionId: string) => {
     const detection = aiDetections.value.find((d) => d.id === detectionId)
     if (!detection) return
-    detection.status = 'rejected'
-    if (editingDetectionId.value === detectionId) editingDetectionId.value = null
-    const layer = annotationLayers.value.find((l) => l.id === detection.layerId)
-    if (layer) layer.visible = false
-    if (selectedDetectionId.value === detectionId) selectedDetectionId.value = null
-    annotationVersion.value++
 
-    // Ask the user why they rejected this detection
-    showFeedbackPopup('semi-reject-reason', detection.id, detection.name)
+    aiDetections.value = aiDetections.value.filter((d) => d.id !== detectionId)
+    if (editingDetectionId.value === detectionId) editingDetectionId.value = null
+    if (selectedDetectionId.value === detectionId) selectedDetectionId.value = null
+    deleteLayer(detection.layerId)
+
+    if (!aiDetections.value.length) {
+      aiRunMode.value = null
+      aiState.value = 'idle'
+      aiProgress.value = 0
+    }
   }
 
   const editDetection = (detectionId: string) => {
@@ -810,31 +806,26 @@ export const useViewerStore = defineStore('viewer', () => {
   /** After user has reviewed all findings, create a folder layer with accepted ones. */
   const finalizeAiResults = () => {
     const accepted = aiDetections.value.filter((d) => d.status === 'accepted')
-    const modeLabel = aiRunMode.value === 'semi' ? 'Semi-Auto' : 'Full-Auto'
 
-    // Collect accepted AI layers as children
-    const childLayers: AnnotationLayer[] = []
+    const finalizedLayers: AnnotationLayer[] = []
     for (const detection of accepted) {
       const layer = annotationLayers.value.find((l) => l.id === detection.layerId)
       if (layer) {
-        childLayers.push({
+        finalizedLayers.push({
           ...layer,
-          type: 'manual', // Convert so user can further edit
+          type: 'manual',
         })
       }
     }
 
-    // Remove all AI layers from top level
     annotationLayers.value = annotationLayers.value.filter((l) => l.type !== 'ai')
 
-    // Always create a folder (empty if all rejected, user can add manual findings)
-    const folderChildId = childLayers.length === 0 ? makeId('layer') : null
-    if (childLayers.length === 0) {
-      // Create one empty finding so the user can start drawing
+    if (finalizedLayers.length === 0) {
+      const layerId = makeId('layer')
       const color = getNextLayerColor()
-      childLayers.push({
-        id: folderChildId!,
-        name: 'Finding 1',
+      finalizedLayers.push({
+        id: layerId,
+        name: getNextLayerName(),
         type: 'manual',
         visible: true,
         color,
@@ -842,30 +833,14 @@ export const useViewerStore = defineStore('viewer', () => {
       })
     }
 
-    const folder: AnnotationLayer = {
-      id: makeId('folder'),
-      name: accepted.length > 0
-        ? `AI ${modeLabel} – ${accepted.length} finding${accepted.length > 1 ? 's' : ''}`
-        : `AI ${modeLabel} – empty`,
-      type: 'folder',
-      visible: true,
-      color: childLayers[0]?.color ?? '#06b6d4',
-      annotations: [],
-      children: childLayers,
-      expanded: true,
-      timestamp: Date.now(),
+    annotationLayers.value = [...finalizedLayers, ...annotationLayers.value]
+    activeLayerId.value = finalizedLayers[0]?.id ?? null
+
+    for (const layer of finalizedLayers) {
+      getManualHistoryBucket(layer.id)
+      getManualFutureBucket(layer.id)
     }
 
-    annotationLayers.value.unshift(folder)
-    activeLayerId.value = childLayers[0]?.id ?? null
-
-    // Init history for new empty finding
-    if (folderChildId) {
-      getManualHistoryBucket(folderChildId)
-      getManualFutureBucket(folderChildId)
-    }
-
-    // Clean up AI state
     aiDetections.value = []
     selectedDetectionId.value = null
     editingDetectionId.value = null
@@ -899,36 +874,62 @@ export const useViewerStore = defineStore('viewer', () => {
     const vol = volumeData.value
     const box = aiBoundingBox.value
 
-    // Determine tumor center based on mode
-    let cx: number, cy: number, cz: number
-    if (box) {
-      // Semi-auto: place detection within the bounding box center
-      const bx = (box.x1 + box.x2) / 2
-      const by = (box.y1 + box.y2) / 2
-      if (box.view === 'axial') {
-        cx = bx; cy = by; cz = box.slice
-      } else if (box.view === 'coronal') {
-        cx = bx; cy = box.slice; cz = by
-      } else {
-        cx = box.slice; cy = bx; cz = by
-      }
-    } else {
-      // Full-auto: default position
-      cx = vol.width * 0.62
-      cy = vol.height * 0.46
-      cz = vol.depth * 0.52
-    }
+    const namePool = ['Suspicious Focus', 'Lesion Candidate', 'Enhancing Region', 'Tumor Candidate']
+    const centerRanges = box
+      ? (() => {
+          const minX = Math.min(box.x1, box.x2)
+          const maxX = Math.max(box.x1, box.x2)
+          const minY = Math.min(box.y1, box.y2)
+          const maxY = Math.max(box.y1, box.y2)
+
+          if (box.view === 'axial') {
+            return {
+              x: [minX, maxX] as const,
+              y: [minY, maxY] as const,
+              z: [Math.max(0, box.slice - 1), Math.min(vol.depth - 1, box.slice + 1)] as const,
+              planeSize: Math.max(6, Math.min(maxX - minX, maxY - minY)),
+            }
+          }
+
+          if (box.view === 'coronal') {
+            return {
+              x: [minX, maxX] as const,
+              y: [Math.max(0, box.slice - 1), Math.min(vol.height - 1, box.slice + 1)] as const,
+              z: [minY, maxY] as const,
+              planeSize: Math.max(6, Math.min(maxX - minX, maxY - minY)),
+            }
+          }
+
+          return {
+            x: [Math.max(0, box.slice - 1), Math.min(vol.width - 1, box.slice + 1)] as const,
+            y: [minX, maxX] as const,
+            z: [minY, maxY] as const,
+            planeSize: Math.max(6, Math.min(maxX - minX, maxY - minY)),
+          }
+        })()
+      : {
+          x: [vol.width * 0.25, vol.width * 0.75] as const,
+          y: [vol.height * 0.25, vol.height * 0.75] as const,
+          z: [Math.max(1, vol.depth * 0.2), Math.min(vol.depth - 2, vol.depth * 0.8)] as const,
+          planeSize: Math.max(6, Math.min(vol.width, vol.height) * 0.2),
+        }
 
     const rawDetections = [
       {
-        name: 'Primary Tumor',
+        name: namePool[randomInt(0, namePool.length - 1)] ?? 'Tumor Candidate',
         label: 'Tumor',
-        confidence: 0.94,
-        cx,
-        cy,
-        cz,
-        radius: vol.width * 0.1,
-        seed: 42,
+        confidence: randomBetween(box ? 0.84 : 0.8, 0.98),
+        cx: clamp(randomBetween(centerRanges.x[0], centerRanges.x[1]), 0, vol.width - 1),
+        cy: clamp(randomBetween(centerRanges.y[0], centerRanges.y[1]), 0, vol.height - 1),
+        cz: clamp(randomBetween(centerRanges.z[0], centerRanges.z[1]), 0, vol.depth - 1),
+        radius: Math.max(
+          2,
+          Math.min(
+            centerRanges.planeSize * randomBetween(0.18, 0.34),
+            Math.max(3, Math.min(vol.width, vol.height, Math.max(4, vol.depth * 1.2)) * 0.22),
+          ),
+        ),
+        seed: randomInt(1, 10_000),
       },
     ]
 
@@ -966,6 +967,9 @@ export const useViewerStore = defineStore('viewer', () => {
     }
 
     aiDetections.value = newDetections
+    if (box) {
+      clearBoundingBox()
+    }
 
     if (newDetections.length > 0) {
       selectDetection(newDetections[0]!.id)
@@ -973,60 +977,6 @@ export const useViewerStore = defineStore('viewer', () => {
 
     aiState.value = 'success'
     annotationVersion.value++
-  }
-
-  // ── Feedback actions ──
-
-  const showFeedbackPopup = (type: FeedbackPopupState['type'], detectionId?: string, detectionName?: string) => {
-    feedbackPopup.value = { visible: true, type, detectionId, detectionName }
-  }
-
-  const dismissFeedback = () => {
-    feedbackPopup.value = { ...feedbackPopup.value, visible: false }
-  }
-
-  const submitFullAutoRating = (rating: number) => {
-    feedbackEntries.value.push({
-      id: makeId('fb'),
-      timestamp: Date.now(),
-      type: 'full-auto-rating',
-      rating,
-    })
-    dismissFeedback()
-  }
-
-  const submitRejectReason = (reason: RejectReason, comment?: string) => {
-    feedbackEntries.value.push({
-      id: makeId('fb'),
-      timestamp: Date.now(),
-      type: 'semi-reject-reason',
-      rejectReason: reason,
-      rejectComment: comment,
-      detectionId: feedbackPopup.value.detectionId,
-      detectionName: feedbackPopup.value.detectionName,
-    })
-    dismissFeedback()
-  }
-
-  const submitEditAcceptAnswer = (answer: EditAcceptAnswer) => {
-    feedbackEntries.value.push({
-      id: makeId('fb'),
-      timestamp: Date.now(),
-      type: 'semi-edit-accept',
-      editAcceptAnswer: answer,
-      detectionId: feedbackPopup.value.detectionId,
-      detectionName: feedbackPopup.value.detectionName,
-    })
-    dismissFeedback()
-  }
-
-  const scheduleFullAutoFeedback = () => {
-    if (fullAutoFeedbackTimer) clearTimeout(fullAutoFeedbackTimer)
-    // Delay so the user has time to examine the results first
-    fullAutoFeedbackTimer = setTimeout(() => {
-      showFeedbackPopup('full-auto-rating')
-      fullAutoFeedbackTimer = null
-    }, 5000)
   }
 
   return {
@@ -1041,8 +991,6 @@ export const useViewerStore = defineStore('viewer', () => {
     activeViewport,
     visibleViewports,
     isFullscreenMode,
-    fullscreenViewportId,
-    fullscreenViewportState,
     activeTool,
     activeToolbarSection,
     renderSettings,
@@ -1059,7 +1007,6 @@ export const useViewerStore = defineStore('viewer', () => {
     aiMode,
     aiState,
     aiProgress,
-    compareOverlay,
     aiDetections,
     selectedDetectionId,
     editingDetectionId,
@@ -1067,13 +1014,9 @@ export const useViewerStore = defineStore('viewer', () => {
     canRunAi,
     aiBoundingBox,
     loadPatient,
-    loadNiftiPatient,
+    loadMedicalPatient,
     setLayout,
     toggleFullscreenMode,
-    switchFullscreenViewport,
-    setFullscreenView,
-    setFullscreenSlice,
-    updateFullscreenSlice,
     setActiveViewport,
     assignViewToActiveViewport,
     assignViewToViewport,
@@ -1093,6 +1036,8 @@ export const useViewerStore = defineStore('viewer', () => {
     setActiveLayer,
     toggleFolderExpanded,
     toggleLayerVisibility,
+    renameLayer,
+    setLayerColor,
     deleteLayer,
     addFindingToFolder,
     beginManualEdit,
@@ -1105,7 +1050,6 @@ export const useViewerStore = defineStore('viewer', () => {
     setBoundingBox,
     clearBoundingBox,
     setAiMode,
-    setCompareOverlay,
     selectDetection,
     acceptDetection,
     rejectDetection,
@@ -1116,11 +1060,5 @@ export const useViewerStore = defineStore('viewer', () => {
     acceptAi,
     finalizeAiResults,
     runAi,
-    feedbackPopup,
-    feedbackEntries,
-    dismissFeedback,
-    submitFullAutoRating,
-    submitRejectReason,
-    submitEditAcceptAnswer,
   }
 })

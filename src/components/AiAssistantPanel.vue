@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { Bot, Check, Columns2, Crosshair, FolderPlus, Pencil, Sparkles, Timer, X } from 'lucide-vue-next'
-import { computed } from 'vue'
+import { Bot, Check, CircleHelp, Crosshair, Pencil, Timer, X } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useViewerStore } from '../stores/viewerStore'
+import type { AiDetection } from '../types/viewer'
 
 const store = useViewerStore()
 const {
@@ -10,27 +11,68 @@ const {
   aiState,
   aiProgress,
   canRunAi,
-  compareOverlay,
   aiDetections,
   selectedDetectionId,
   editingDetectionId,
-  aiRunMode,
   aiBoundingBox,
   activeTool,
 } = storeToRefs(store)
 
 const hasDetections = computed(() => aiDetections.value.length > 0)
 const pendingCount = computed(() => aiDetections.value.filter((d) => d.status === 'pending').length)
-const allReviewed = computed(() => hasDetections.value && pendingCount.value === 0)
-const acceptedCount = computed(() => aiDetections.value.filter((d) => d.status === 'accepted').length)
 const hasBoundingBox = computed(() => !!aiBoundingBox.value)
 const isDrawingBox = computed(() => activeTool.value === 'boundingBox')
+const openInfoDetectionId = ref<string | null>(null)
+const infoDetection = computed(
+  () => aiDetections.value.find((d) => d.id === openInfoDetectionId.value) ?? null,
+)
 
-const confidenceClass = (confidence: number) => {
-  if (confidence >= 0.8) return 'text-red-500'
-  if (confidence >= 0.6) return 'text-amber-500'
-  return 'text-zinc-400'
+const confidenceStyle = (confidence: number) => {
+  const percent = Math.round(confidence * 100)
+  const hue = percent <= 50
+    ? (percent / 50) * 28
+    : 28 + ((percent - 50) / 50) * (120 - 28)
+
+  return {
+    color: `hsl(${hue}, 78%, 36%)`,
+    backgroundColor: `hsla(${hue}, 90%, 52%, 0.14)`,
+    borderColor: `hsla(${hue}, 78%, 42%, 0.35)`,
+  }
 }
+
+const openConfidencePopup = (detectionId: string) => {
+  openInfoDetectionId.value = detectionId
+}
+
+const closeConfidencePopup = () => {
+  openInfoDetectionId.value = null
+}
+
+const confidenceLevel = (detection: AiDetection) => {
+  const percent = Math.round(detection.confidence * 100)
+  if (percent >= 95) return 'Very high confidence'
+  if (percent >= 90) return 'High confidence'
+  if (percent >= 85) return 'Strong confidence'
+  return 'Review-ready confidence'
+}
+
+const confidenceSummary = (detection: AiDetection) => {
+  const percent = Math.round(detection.confidence * 100)
+
+  if (percent >= 95) {
+    return 'This finding stands out clearly from nearby tissue and keeps a stable shape across neighboring slices.'
+  }
+
+  if (percent >= 90) {
+    return 'This finding has strong local contrast and a compact mask shape that stays consistent around the detected center.'
+  }
+
+  return 'This finding remains above the review threshold because the region is coherent, localized, and persistent across adjacent slices.'
+}
+
+const confidenceReason = (detection: AiDetection) => `This region stands out because signal contrast, contour continuity, and slice-to-slice consistency remain strong near (${Math.round(detection.centerX)}, ${Math.round(detection.centerY)}, ${Math.round(detection.centerZ)}).`
+
+const confidenceNote = (detection: AiDetection) => `This mask is currently interpreted as a ${detection.label.toLowerCase()} candidate with an estimated radius of about ${Math.max(1, Math.round(detection.radius))} px. If the borders do not match the anatomy, refine the region directly with the brush and eraser tools.`
 </script>
 
 <template>
@@ -144,116 +186,54 @@ const confidenceClass = (confidence: number) => {
 
           <!-- Confidence -->
           <span
-            class="flex-shrink-0 text-[11px] font-semibold tabular-nums"
-            :class="confidenceClass(detection.confidence)"
+            class="flex-shrink-0 rounded-full border px-1.5 py-0.5 text-[11px] font-semibold tabular-nums"
+            :style="confidenceStyle(detection.confidence)"
           >
             {{ Math.round(detection.confidence * 100) }}%
           </span>
+          <button
+            type="button"
+            class="flex-shrink-0 rounded-full border border-zinc-200 bg-white/90 p-1 text-zinc-500 transition hover:border-zinc-300 hover:bg-zinc-100 hover:text-zinc-700"
+            title="Open confidence details"
+            @click.stop="openConfidencePopup(detection.id)"
+          >
+            <CircleHelp class="h-3.5 w-3.5" />
+          </button>
 
-          <!-- Per-detection controls (both modes) -->
-          <template v-if="detection.status === 'pending'">
+          <div class="flex items-center gap-1">
+            <button
+              class="flex-shrink-0 rounded p-0.5 transition"
+              :class="
+                editingDetectionId === detection.id
+                  ? 'bg-zinc-900 text-zinc-100'
+                  : 'text-zinc-500 hover:bg-zinc-200'
+              "
+              title="Adjust mask"
+              @click.stop="store.editDetection(detection.id)"
+            >
+              <Pencil class="h-3.5 w-3.5" />
+            </button>
             <button
               class="flex-shrink-0 rounded p-0.5 text-emerald-600 hover:bg-emerald-100 transition"
-              title="Accept"
+              title="Accept and create layer"
               @click.stop="store.acceptDetection(detection.id)"
             >
               <Check class="h-3.5 w-3.5" />
             </button>
             <button
               class="flex-shrink-0 rounded p-0.5 text-red-500 hover:bg-red-100 transition"
-              title="Reject"
+              title="Delete result"
               @click.stop="store.rejectDetection(detection.id)"
             >
               <X class="h-3.5 w-3.5" />
             </button>
-            <button
-              class="flex-shrink-0 rounded p-0.5 transition"
-              :class="
-                editingDetectionId === detection.id
-                  ? 'bg-zinc-900 text-zinc-100'
-                  : 'text-zinc-500 hover:bg-zinc-200'
-              "
-              title="Edit / Refine boundaries"
-              @click.stop="store.editDetection(detection.id)"
-            >
-              <Pencil class="h-3.5 w-3.5" />
-            </button>
-          </template>
-
-          <template v-else-if="detection.status === 'accepted'">
-            <span class="flex-shrink-0 text-emerald-600" title="Accepted">
-              <Check class="h-3.5 w-3.5" />
-            </span>
-            <button
-              class="flex-shrink-0 rounded p-0.5 transition"
-              :class="
-                editingDetectionId === detection.id
-                  ? 'bg-zinc-900 text-zinc-100'
-                  : 'text-zinc-500 hover:bg-zinc-200'
-              "
-              title="Edit / Refine boundaries"
-              @click.stop="store.editDetection(detection.id)"
-            >
-              <Pencil class="h-3.5 w-3.5" />
-            </button>
-          </template>
-
-          <template v-else>
-            <span class="flex-shrink-0 text-red-400 text-[10px]">Rejected</span>
-          </template>
+          </div>
         </div>
       </div>
-
-      <!-- Bulk actions (while pending exist) -->
-      <div v-if="pendingCount > 0" class="mt-2 grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          class="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-100"
-          @click="store.acceptAllDetections()"
-        >
-          Accept All
-        </button>
-        <button
-          type="button"
-          class="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] font-semibold text-red-600 transition hover:bg-red-100"
-          @click="store.rejectAllDetections()"
-        >
-          Reject All
-        </button>
-      </div>
-
-      <!-- Create Layer button (when all reviewed) -->
-      <button
-        v-if="allReviewed"
-        type="button"
-        class="mt-2 w-full rounded-lg px-3 py-2 text-xs font-semibold text-white transition"
-        :class="acceptedCount > 0
-          ? 'bg-emerald-600 hover:bg-emerald-700'
-          : 'bg-zinc-700 hover:bg-zinc-600'"
-        @click="store.finalizeAiResults()"
-      >
-        <FolderPlus class="mr-1 inline h-3.5 w-3.5" />
-        <template v-if="acceptedCount > 0">
-          Create Layer ({{ acceptedCount }} accepted)
-        </template>
-        <template v-else>
-          Create Empty Layer
-        </template>
-      </button>
     </div>
 
-    <!-- Compare overlay -->
-    <button
-      type="button"
-      class="mt-2 w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100"
-      :class="compareOverlay ? 'ring-1 ring-zinc-900' : ''"
-      @click="store.setCompareOverlay()"
-    >
-      <Columns2 class="mr-1 inline h-3 w-3" /> Compare Overlay
-    </button>
-
     <!-- Progress bar -->
-    <div class="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-2">
+    <div v-if="aiState === 'running' || hasDetections" class="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-2">
       <div class="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
         <span class="inline-flex items-center gap-1"><Timer class="h-3 w-3" /> AI progress</span>
         <span>{{ aiProgress }}%</span>
@@ -265,31 +245,52 @@ const confidenceClass = (confidence: number) => {
         />
       </div>
     </div>
-
-    <!-- Clear all results -->
-    <button
-      v-if="hasDetections"
-      type="button"
-      :disabled="aiState === 'running'"
-      class="mt-2 w-full rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-semibold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
-      @click="store.rejectAi()"
-    >
-      Clear All Results
-    </button>
-
-    <!-- Info -->
-    <div class="mt-3 rounded-lg border border-dashed border-zinc-300 bg-zinc-50 p-2 text-[11px] text-zinc-500">
-      <p class="inline-flex items-center gap-1 font-semibold text-zinc-700">
-        <Sparkles class="h-3 w-3" /> Simulation Notes
-      </p>
-      <p class="mt-1">
-        <template v-if="aiMode === 'full'">
-          Fully automatic mode scans the entire volume. Click a finding to navigate, use controls to accept, reject, or edit, then create a layer.
-        </template>
-        <template v-else>
-          Semi-automatic mode: draw a bounding box first, then run AI. Review each finding, then create a layer with accepted results.
-        </template>
-      </p>
-    </div>
   </section>
+
+  <div
+    v-if="infoDetection"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/35 px-4"
+    @click.self="closeConfidencePopup()"
+  >
+    <div class="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-4 shadow-2xl">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-zinc-900">{{ infoDetection.name }}</p>
+          <p class="mt-1 text-xs text-zinc-500">
+            {{ infoDetection.label }} • {{ Math.round(infoDetection.confidence * 100) }}% confidence
+          </p>
+        </div>
+        <button
+          type="button"
+          class="rounded-lg p-1 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-600"
+          @click="closeConfidencePopup()"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      </div>
+
+      <div class="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+        <div class="flex items-center gap-2">
+          <span
+            class="rounded-full border px-2 py-1 text-xs font-semibold tabular-nums"
+            :style="confidenceStyle(infoDetection.confidence)"
+          >
+            {{ confidenceLevel(infoDetection) }}
+          </span>
+        </div>
+        <p class="mt-2 text-xs leading-5 text-zinc-600">{{ confidenceSummary(infoDetection) }}</p>
+      </div>
+
+      <div class="mt-3 space-y-2 text-xs leading-5 text-zinc-600">
+        <div class="rounded-xl border border-zinc-200 bg-white p-3">
+          <p class="font-semibold text-zinc-800">Why this stands out</p>
+          <p class="mt-1">{{ confidenceReason(infoDetection) }}</p>
+        </div>
+        <div class="rounded-xl border border-zinc-200 bg-white p-3">
+          <p class="font-semibold text-zinc-800">Interpretation notes</p>
+          <p class="mt-1">{{ confidenceNote(infoDetection) }}</p>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>

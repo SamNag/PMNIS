@@ -26,10 +26,10 @@ const handleFileUpload = async (event: Event) => {
 
   isLoading.value = true
   try {
-    await store.loadNiftiPatient(file)
+    await store.loadMedicalPatient(file)
   } catch (error) {
-    console.error('Failed to load NIfTI file:', error)
-    alert('Failed to load NIfTI file. Please make sure it is a valid .nii file.')
+    console.error('Failed to load medical image:', error)
+    alert(error instanceof Error ? error.message : 'Failed to load scan.')
   } finally {
     isLoading.value = false
     // Reset input so same file can be selected again
@@ -62,7 +62,7 @@ const handleFileUpload = async (event: Event) => {
       <input
         ref="fileInputRef"
         type="file"
-        accept=".nii,.nii.gz"
+        accept=".nii,.nii.gz,.dcm,.dicom,application/dicom"
         class="hidden"
         @change="handleFileUpload"
       />
@@ -95,24 +95,24 @@ const handleFileUpload = async (event: Event) => {
           Load Demo
         </button>
         <button
-          type="button"
-          class="inline-flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
-          :disabled="isLoading"
-          @click="triggerFileUpload"
-        >
-          <Upload class="h-4 w-4" />
-          {{ isLoading ? 'Loading...' : 'Upload MRI' }}
-        </button>
+        type="button"
+        class="inline-flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+        :disabled="isLoading"
+        @click="triggerFileUpload"
+      >
+        <Upload class="h-4 w-4" />
+        {{ isLoading ? 'Loading...' : 'Upload Scan' }}
+      </button>
         <input
           ref="fileInputRef"
           type="file"
-          accept=".nii,.nii.gz"
+          accept=".nii,.nii.gz,.dcm,.dicom,application/dicom"
           class="hidden"
           @change="handleFileUpload"
         />
         <p class="text-xs text-zinc-500">
           <span class="font-semibold text-zinc-700">Frontend-only prototype</span>
-          · local MRI volume + tumor mask
+          · local NIfTI or DICOM volume
         </p>
       </div>
     </div>

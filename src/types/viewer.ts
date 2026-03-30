@@ -1,4 +1,4 @@
-export type LayoutMode = '2x2' | '3x1' | 'single'
+export type LayoutMode = '3x1' | 'single'
 
 export type ViewType = 'axial' | 'sagittal' | 'coronal' | 'threeD'
 
@@ -20,7 +20,7 @@ export type ToolId =
   | 'clearSelection'
   | 'boundingBox'
 
-export type ToolbarSection = 'image' | 'manual' | 'ai' | 'general'
+export type ToolbarSection = 'image' | 'manual' | 'general'
 
 export type LayerType = 'manual' | 'ai' | 'folder'
 

@@ -493,15 +493,12 @@ function buildMaskAtlasPixels(
     }
   }
 
-  // Annotation layers (with per-layer colors) — add marks first, then erasers
+  // Annotation layers are replayed in draw order so later edits can paint back over erasures.
   for (const layer of layers) {
     if (!layer.visible) continue
     const [lr, lg, lb] = hexToRgb(layer.color)
     for (const mark of layer.annotations) {
-      if (!mark.eraser) rasterizeMark(pixels, mark, lr, lg, lb, W, H, D, tilesX, atlasW)
-    }
-    for (const mark of layer.annotations) {
-      if (mark.eraser) rasterizeMark(pixels, mark, 0, 0, 0, W, H, D, tilesX, atlasW)
+      rasterizeMark(pixels, mark, mark.eraser ? 0 : lr, mark.eraser ? 0 : lg, mark.eraser ? 0 : lb, W, H, D, tilesX, atlasW)
     }
   }
 
@@ -713,4 +710,3 @@ export function destroyThreeDVolume(canvas: HTMLCanvasElement): void {
   gl.deleteProgram(program)
   stateMap.delete(canvas)
 }
-

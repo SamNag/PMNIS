@@ -9,7 +9,6 @@ const { activeToolbarSection } = storeToRefs(store)
 const categories: Array<{ key: ToolbarSection; label: string }> = [
   { key: 'image', label: 'IMG' },
   { key: 'manual', label: 'DRAW' },
-  { key: 'ai', label: 'AI' },
 ]
 </script>
 

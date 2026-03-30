@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "dicom-parser": "^1.8.21",
     "lucide-vue-next": "^0.577.0",
     "nifti-reader-js": "^0.8.0",
     "pinia": "^3.0.4",
