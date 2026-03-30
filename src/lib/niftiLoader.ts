@@ -7,9 +7,8 @@ const clampToByte = (value: number): number => {
   return Math.round(value)
 }
 
-export const loadNiftiFile = async (file: File): Promise<VolumeData> => {
-  let data: ArrayBuffer = await file.arrayBuffer()
-
+export const loadNiftiArrayBuffer = (sourceData: ArrayBuffer): VolumeData => {
+  let data = sourceData
   // Check if compressed
   if (nifti.isCompressed(data)) {
     data = nifti.decompress(data) as ArrayBuffer
@@ -95,3 +94,4 @@ export const loadNiftiFile = async (file: File): Promise<VolumeData> => {
   }
 }
 
+export const loadNiftiFile = async (file: File): Promise<VolumeData> => loadNiftiArrayBuffer(await file.arrayBuffer())

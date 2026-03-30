@@ -12,7 +12,7 @@
     </div>
     <h2 class="text-lg font-semibold text-zinc-900">Brain MRI Workstation Ready</h2>
     <p class="mt-2 max-w-xl text-sm text-zinc-600">
-      Load the sample patient to initialize orthogonal MRI views, tumor mask overlay, 3D tumor rendering, annotation layers,
+      Load the sample patient to initialize orthogonal MRI views, 3D volume rendering, annotation layers,
       and mock AI-assisted segmentation.
     </p>
   </div>

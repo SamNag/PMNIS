@@ -18,14 +18,14 @@ const steps: TutorialStep[] = [
     target: 'header-buttons',
     title: 'Load MRI Data',
     description:
-      'Start by loading a demo scan to explore the app, or upload your own NIfTI MRI file (.nii or .nii.gz).',
+      'Start by loading a demo scan to explore the app, or upload your own NIfTI or DICOM MRI file (.nii, .nii.gz, .dcm).',
     preferredPosition: 'bottom',
   },
   {
     target: 'toolbar-categories',
     title: 'Toolbar Sections',
     description:
-      'Switch between Image adjustments (IMG), Manual drawing tools (DRAW), and AI-powered segmentation (AI).',
+      'Switch between Image adjustments (IMG) and Manual drawing tools (DRAW). AI controls live in the right-side assistant panel.',
     preferredPosition: 'right',
   },
   {
@@ -39,35 +39,35 @@ const steps: TutorialStep[] = [
     target: 'viewer-grid',
     title: 'MRI Viewer',
     description:
-      'View brain MRI slices across multiple orientations — axial, sagittal, coronal, and 3D volume. Scroll to navigate through slices.',
+      'View brain MRI slices across the three standard orientations — axial, coronal, and sagittal. In single view you can also switch to 3D.',
     preferredPosition: 'bottom',
   },
   {
     target: 'layout-panel',
     title: 'Layout Options',
     description:
-      'Choose your preferred viewport arrangement: 2×2 grid, 3×1 row, or a single enlarged view for detailed inspection.',
+      'Choose between the default 3×1 tri-planar layout and a single focused view that can still be switched to any orientation or 3D.',
     preferredPosition: 'left',
   },
   {
     target: 'layer-panel',
     title: 'Annotation Layers',
     description:
-      'Create manual annotation layers, toggle tumor mask visibility, and manage multiple segmentation overlays.',
+      'Create manual annotation layers and manage accepted AI findings or your own drawn segmentation overlays.',
     preferredPosition: 'left',
   },
   {
     target: 'ai-assistant',
     title: 'AI Assistant',
     description:
-      'Run AI tumor segmentation in fully automatic or semi-automatic mode. Review findings, adjust confidence thresholds, and accept or reject results.',
+      'Run AI tumor segmentation in fully automatic or semi-automatic mode. Review findings, check confidence hints, and accept, reject, or adjust results.',
     preferredPosition: 'left',
   },
   {
     target: 'fullscreen-toggle',
     title: 'Fullscreen & Reset',
     description:
-      'Enter fullscreen mode for a focused single-viewport experience. Use reset to restore default view settings.',
+      'Enter fullscreen to expand the current workspace while keeping the same viewer layout. The right-side tools stay available in a smaller overlay panel.',
     preferredPosition: 'right',
   },
 ]
@@ -77,7 +77,7 @@ const highlightRect = ref<DOMRect | null>(null)
 
 const isFirst = computed(() => currentStep.value === 0)
 const isLast = computed(() => currentStep.value === steps.length - 1)
-const step = computed(() => steps[currentStep.value])
+const step = computed<TutorialStep>(() => steps[currentStep.value] ?? steps[0]!)
 const stepLabel = computed(() => `${currentStep.value + 1} / ${steps.length}`)
 
 const updateHighlight = () => {

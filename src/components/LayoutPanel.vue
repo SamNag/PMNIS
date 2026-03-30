@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Columns3, LayoutGrid, Square } from 'lucide-vue-next'
+import { Columns3, Square } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useViewerStore } from '../stores/viewerStore'
 import type { LayoutMode } from '../types/viewer'
@@ -9,8 +9,7 @@ const { layout } = storeToRefs(store)
 
 const setLayout = (mode: LayoutMode) => store.setLayout(mode)
 
-const layoutItems: Array<{ key: LayoutMode; label: string; icon: typeof LayoutGrid }> = [
-  { key: '2x2', label: '2 x 2', icon: LayoutGrid },
+const layoutItems: Array<{ key: LayoutMode; label: string; icon: typeof Columns3 }> = [
   { key: '3x1', label: '3 x 1', icon: Columns3 },
   { key: 'single', label: 'Single', icon: Square },
 ]
@@ -20,7 +19,7 @@ const layoutItems: Array<{ key: LayoutMode; label: string; icon: typeof LayoutGr
   <section class="rounded-2xl border border-zinc-200 bg-white p-4 shadow-panel" data-tutorial="layout-panel">
     <h3 class="mb-3 text-sm font-semibold text-zinc-900">Layout</h3>
 
-    <div class="grid grid-cols-3 gap-2">
+    <div class="grid grid-cols-2 gap-2">
       <button
         v-for="item in layoutItems"
         :key="item.key"

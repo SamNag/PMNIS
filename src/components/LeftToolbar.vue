@@ -1,15 +1,10 @@
 <script setup lang="ts">
 import {
-  Bot,
-  Brain,
   Brush,
-  Check,
-  Columns2,
   Contrast,
   Eraser,
   Hand,
   Maximize2,
-  Play,
   Redo2,
   RotateCcw,
   ScanLine,
@@ -32,10 +27,6 @@ const {
   activeToolbarSection,
   isPatientLoaded,
   activeLayerId,
-  aiMode,
-  canRunAi,
-  aiState,
-  compareOverlay,
   renderSettings,
   brushSize,
   canUndoManual,
@@ -44,26 +35,31 @@ const {
 } = storeToRefs(store)
 
 // allow selecting tools from the general group without switching the active toolbar section
-const selectTool = (tool: ToolId, section: 'image' | 'manual' | 'ai' | 'general') => store.setActiveTool(tool, section)
+const selectTool = (tool: ToolId, section: 'image' | 'manual' | 'general') => store.setActiveTool(tool, section)
 
 type AdjustControl = 'brightness' | 'contrast' | 'threshold'
 type OverlayMode = 'size' | 'adjust' | null
 
 const activeAdjustControl = ref<AdjustControl>('brightness')
 const overlayMode = ref<OverlayMode>(null)
+const BRIGHTNESS_MIN = 20
+const BRIGHTNESS_MAX = 220
+const toBrightnessSliderValue = (windowCenter: number) => BRIGHTNESS_MIN + BRIGHTNESS_MAX - windowCenter
+const fromBrightnessSliderValue = (sliderValue: number) => BRIGHTNESS_MIN + BRIGHTNESS_MAX - sliderValue
 
 const isManualReady = computed(() => !!activeLayerId.value && isPatientLoaded.value)
 const brushSizeLabel = computed(() => (Number.isInteger(brushSize.value) ? `${brushSize.value}` : brushSize.value.toFixed(1)))
 
 const adjustControlConfig = computed(() => {
   if (activeAdjustControl.value === 'brightness') {
+    const brightnessValue = toBrightnessSliderValue(renderSettings.value.windowCenter)
     return {
       label: 'Brightness',
-      valueText: `${Math.round(renderSettings.value.windowCenter)}`,
-      min: 20,
-      max: 220,
+      valueText: `${Math.round(brightnessValue)}`,
+      min: BRIGHTNESS_MIN,
+      max: BRIGHTNESS_MAX,
       step: 1,
-      value: renderSettings.value.windowCenter,
+      value: brightnessValue,
     }
   }
 
@@ -118,7 +114,7 @@ const closeOverlay = () => {
 
 const updateAdjustValue = (value: number) => {
   if (activeAdjustControl.value === 'brightness') {
-    store.setWindowCenter(value)
+    store.setWindowCenter(fromBrightnessSliderValue(value))
     return
   }
 
@@ -148,7 +144,7 @@ watch(activeToolbarSection, () => {
 
       <!-- Small left-aligned header that reflects the currently active toolbar section -->
       <p class="px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400 text-center">
-        {{ activeToolbarSection === 'manual' ? 'Manual' : activeToolbarSection === 'ai' ? 'AI' : 'Image' }}
+        {{ activeToolbarSection === 'manual' ? 'Manual' : 'Image' }}
       </p>
 
       <!-- Image controls -->
@@ -196,40 +192,6 @@ watch(activeToolbarSection, () => {
         <TooltipIconButton :icon="Undo2" label="Step back" :disabled="!canUndoManual" @click="store.undoManualEdit()" />
         <TooltipIconButton :icon="Redo2" label="Step front" :disabled="!canRedoManual" @click="store.redoManualEdit()" />
         <TooltipIconButton :icon="Trash2" label="Reset full" :disabled="!isManualReady" @click="store.resetActiveManualLayer()" />
-      </div>
-
-      <!-- AI controls -->
-      <div v-else-if="activeToolbarSection === 'ai'" class="flex flex-col items-center gap-2">
-        <TooltipIconButton
-          :icon="Bot"
-          label="Fully automatic"
-          :active="aiMode === 'full'"
-          :disabled="!isPatientLoaded"
-          @click="store.setAiMode('full')"
-        />
-        <TooltipIconButton
-          :icon="Brain"
-          label="Semi-automatic"
-          :active="aiMode === 'semi'"
-          :disabled="!isPatientLoaded"
-          @click="store.setAiMode('semi')"
-        />
-        <TooltipIconButton
-          :icon="Play"
-          label="Run AI"
-          :disabled="!canRunAi"
-          :active="aiState === 'running'"
-          @click="store.runAi()"
-        />
-        <TooltipIconButton :icon="Check" label="Accept result" :disabled="aiState !== 'success'" @click="store.acceptAi()" />
-        <TooltipIconButton :icon="X" label="Reject result" :disabled="aiState === 'running'" @click="store.rejectAi()" />
-        <TooltipIconButton
-          :icon="Columns2"
-          label="Compare overlay"
-          :disabled="!isPatientLoaded"
-          :active="compareOverlay"
-          @click="store.setCompareOverlay()"
-        />
       </div>
 
     </div>

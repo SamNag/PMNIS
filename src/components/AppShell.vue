@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useViewerStore } from '../stores/viewerStore'
 import AiAssistantPanel from './AiAssistantPanel.vue'
-import FeedbackPopup from './FeedbackPopup.vue'
 import LayoutPanel from './LayoutPanel.vue'
 import LayerPanel from './LayerPanel.vue'
 import LeftToolbar from './LeftToolbar.vue'
@@ -18,6 +17,12 @@ const { isFullscreenMode } = storeToRefs(store)
 
 const isSidebarOpen = ref(true)
 const showTutorial = ref(true)
+
+watch(isFullscreenMode, (next, previous) => {
+  if (next && !previous) {
+    isSidebarOpen.value = false
+  }
+})
 
 const toggleSidebar = () => {
   isSidebarOpen.value = !isSidebarOpen.value
@@ -39,7 +44,7 @@ const handleBackdropClick = () => {
           <LeftToolbar />
         </div>
 
-        <main class="min-w-0 flex min-h-0 flex-1 flex-col gap-3" :class="isFullscreenMode ? 'pr-6' : ''">
+        <main class="min-w-0 flex min-h-0 flex-1 flex-col gap-3" :class="isFullscreenMode ? 'pr-10' : ''">
           <TopHeaderBar :compact="isFullscreenMode" />
           <ViewerGrid class="min-h-0 flex-1" />
         </main>
@@ -60,7 +65,7 @@ const handleBackdropClick = () => {
           <!-- Toggle Button -->
           <button
             type="button"
-            class="flex h-24 w-10 items-center justify-center self-center rounded-l-xl border-2 border-r-0 shadow-xl transition"
+            class="flex h-20 w-10 items-center justify-center self-center rounded-l-xl border-2 border-r-0 shadow-xl transition"
             :class="isSidebarOpen
               ? 'border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-100'
               : 'border-white bg-white text-zinc-900 hover:bg-zinc-100'"
@@ -70,7 +75,11 @@ const handleBackdropClick = () => {
           </button>
 
           <!-- Sidebar Content -->
-          <div class="h-full w-[320px] space-y-3 overflow-y-auto bg-zinc-50 p-3 shadow-xl lg:w-[340px]" @click.stop>
+          <div
+            class="h-full w-[280px] space-y-3 overflow-y-auto rounded-l-2xl border-l border-zinc-200 bg-white/95 p-3 shadow-2xl backdrop-blur lg:w-[300px]"
+            @click.stop
+          >
+            <LayoutPanel />
             <LayerPanel />
             <AiAssistantPanel />
           </div>
@@ -88,11 +97,6 @@ const handleBackdropClick = () => {
     <!-- Onboarding tutorial overlay -->
     <Teleport to="body">
       <OnboardingTutorial v-if="showTutorial" @close="showTutorial = false" />
-    </Teleport>
-
-    <!-- Feedback popup -->
-    <Teleport to="body">
-      <FeedbackPopup />
     </Teleport>
   </div>
 </template>
