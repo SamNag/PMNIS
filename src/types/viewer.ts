@@ -158,3 +158,25 @@ export interface FeedbackEntry {
   detectionId?: string
   detectionName?: string
 }
+
+// ── Accounts & Roles ──
+
+export type UserRole = 'doctor' | 'student'
+
+export interface UserAccount {
+  id: string
+  name: string
+  role: UserRole
+  initials: string
+  avatarColor: string
+}
+
+// ── Student Learning ──
+
+export interface EducationalDescription {
+  title: string
+  pathology: string
+  imagingFeatures: string
+  clinicalContext: string
+}
+

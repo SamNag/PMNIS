@@ -327,12 +327,12 @@ function buildAtlasTexture(
   }
   if (maxVal === 0) maxVal = 1
 
-  // Layout slices in a 2-D atlas grid
+  // Layout slices in a 2-D atlas grid, capping both dimensions to the GPU limit
   const maxTexSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number
   const tilesX = Math.min(D, Math.floor(maxTexSize / W))
   const tilesY = Math.ceil(D / tilesX)
-  const atlasW = tilesX * W
-  const atlasH = tilesY * H
+  const atlasW = Math.min(tilesX * W, maxTexSize)
+  const atlasH = Math.min(tilesY * H, maxTexSize)
 
   const pixels = new Uint8Array(atlasW * atlasH)
 
@@ -463,6 +463,9 @@ function rasterizeMark(
   }
 }
 
+let cachedMaskPixels: Uint8Array | null = null
+let cachedMaskSize = 0
+
 function buildMaskAtlasPixels(
   volume: VolumeData,
   layers: AnnotationLayer[],
@@ -472,7 +475,16 @@ function buildMaskAtlasPixels(
   atlasH: number,
 ): Uint8Array {
   const { width: W, height: H, depth: D, mask } = volume
-  const pixels = new Uint8Array(atlasW * atlasH * 4)
+  const totalSize = atlasW * atlasH * 4
+
+  // Reuse allocation when possible to avoid repeated multi-MB allocations
+  if (!cachedMaskPixels || cachedMaskSize !== totalSize) {
+    cachedMaskPixels = new Uint8Array(totalSize)
+    cachedMaskSize = totalSize
+  } else {
+    cachedMaskPixels.fill(0)
+  }
+  const pixels = cachedMaskPixels
 
   // Base tumor mask (pinkish like 2D overlay)
   if (showMask) {
@@ -531,14 +543,14 @@ function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
 
   const { texture, tilesX, atlasW, atlasH, isoThreshold } = buildAtlasTexture(gl, volume)
 
-  // Empty mask texture (will be filled on first render)
+  // Start with a tiny 1×1 mask texture — resized to full atlas only when annotations exist
   const maskTex = gl.createTexture()!
   gl.bindTexture(gl.TEXTURE_2D, maskTex)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, atlasW, atlasH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4))
 
   // Full-screen quad
   const posBuf = gl.createBuffer()!
@@ -660,9 +672,16 @@ export function renderThreeDVolume(
   // Update mask atlas if annotations changed
   const mv = computeMaskVersion(layers, showMask)
   if (mv !== state.maskVersion) {
-    const maskPixels = buildMaskAtlasPixels(volume, layers, showMask, tilesX, atlasW, atlasH)
-    gl.bindTexture(gl.TEXTURE_2D, state.maskTexture)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, atlasW, atlasH, 0, gl.RGBA, gl.UNSIGNED_BYTE, maskPixels)
+    const hasVisibleAnnotations = layers.some((l) => l.visible && l.annotations.length > 0)
+    if (!showMask && !hasVisibleAnnotations) {
+      // Nothing to render — upload a tiny transparent texture instead of the full atlas
+      gl.bindTexture(gl.TEXTURE_2D, state.maskTexture)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4))
+    } else {
+      const maskPixels = buildMaskAtlasPixels(volume, layers, showMask, tilesX, atlasW, atlasH)
+      gl.bindTexture(gl.TEXTURE_2D, state.maskTexture)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, atlasW, atlasH, 0, gl.RGBA, gl.UNSIGNED_BYTE, maskPixels)
+    }
     state.maskVersion = mv
   }
 

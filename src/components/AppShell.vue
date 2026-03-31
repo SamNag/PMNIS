@@ -16,7 +16,7 @@ const store = useViewerStore()
 const { isFullscreenMode } = storeToRefs(store)
 
 const isSidebarOpen = ref(true)
-const showTutorial = ref(true)
+const showTutorial = ref(!sessionStorage.getItem('pmnis-tutorial-seen'))
 
 watch(isFullscreenMode, (next, previous) => {
   if (next && !previous) {
@@ -32,6 +32,11 @@ const handleBackdropClick = () => {
   if (isSidebarOpen.value) {
     isSidebarOpen.value = false
   }
+}
+
+const closeTutorial = () => {
+  showTutorial.value = false
+  sessionStorage.setItem('pmnis-tutorial-seen', '1')
 }
 </script>
 
@@ -96,7 +101,7 @@ const handleBackdropClick = () => {
 
     <!-- Onboarding tutorial overlay -->
     <Teleport to="body">
-      <OnboardingTutorial v-if="showTutorial" @close="showTutorial = false" />
+      <OnboardingTutorial v-if="showTutorial" @close="closeTutorial" />
     </Teleport>
   </div>
 </template>

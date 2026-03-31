@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { Bot, Check, CircleHelp, Crosshair, Pencil, Timer, X } from 'lucide-vue-next'
+import { BookOpen, Bot, Check, CircleHelp, Crosshair, Pencil, Timer, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useViewerStore } from '../stores/viewerStore'
+import { useAccountStore } from '../stores/accountStore'
+import { educationalDescriptions } from '../data/educationalContent'
 import type { AiDetection } from '../types/viewer'
 
 const store = useViewerStore()
+const accountStore = useAccountStore()
 const {
   aiMode,
   aiState,
@@ -17,6 +20,27 @@ const {
   aiBoundingBox,
   activeTool,
 } = storeToRefs(store)
+const { isStudent } = storeToRefs(accountStore)
+
+const eduDetectionId = ref<string | null>(null)
+const eduDetection = computed(() =>
+  eduDetectionId.value ? aiDetections.value.find((d) => d.id === eduDetectionId.value) ?? null : null,
+)
+const eduContent = computed(() =>
+  eduDetection.value ? (educationalDescriptions[eduDetection.value.label] ?? null) : null,
+)
+
+function openEduPopup(detectionId: string) {
+  eduDetectionId.value = detectionId
+}
+
+function closeEduPopup() {
+  eduDetectionId.value = null
+}
+
+function getEduContent(label: string) {
+  return educationalDescriptions[label] ?? null
+}
 
 const hasDetections = computed(() => aiDetections.value.length > 0)
 const pendingCount = computed(() => aiDetections.value.filter((d) => d.status === 'pending').length)
@@ -103,7 +127,13 @@ const confidenceNote = (detection: AiDetection) => `This mask is currently inter
     </div>
 
     <p class="mb-3 text-xs text-zinc-500">
-      <template v-if="aiMode === 'full'">
+      <template v-if="isStudent && aiMode === 'full'">
+        Full mode analyzes the complete scan automatically. Review each finding below to practice your diagnostic skills.
+      </template>
+      <template v-else-if="isStudent && aiMode === 'semi'">
+        Draw a bounding box to guide the AI to a specific region. This helps you practice focused examination of suspicious areas.
+      </template>
+      <template v-else-if="aiMode === 'full'">
         Full mode analyzes the complete scan. You can accept, reject, or refine each finding.
       </template>
       <template v-else>
@@ -160,7 +190,7 @@ const confidenceNote = (detection: AiDetection) => `This mask is currently inter
         </span>
       </div>
 
-      <div class="max-h-52 space-y-1 overflow-y-auto">
+      <div class="max-h-64 space-y-1 overflow-y-auto">
         <div
           v-for="detection in aiDetections"
           :key="detection.id"
@@ -214,6 +244,14 @@ const confidenceNote = (detection: AiDetection) => `This mask is currently inter
               <Pencil class="h-3.5 w-3.5" />
             </button>
             <button
+              v-if="isStudent && getEduContent(detection.label)"
+              class="flex-shrink-0 rounded p-0.5 text-violet-500 transition hover:bg-violet-50 hover:text-violet-600"
+              title="Learn more"
+              @click.stop="openEduPopup(detection.id)"
+            >
+              <BookOpen class="h-3.5 w-3.5" />
+            </button>
+            <button
               class="flex-shrink-0 rounded p-0.5 text-emerald-600 hover:bg-emerald-100 transition"
               title="Accept and create layer"
               @click.stop="store.acceptDetection(detection.id)"
@@ -229,6 +267,7 @@ const confidenceNote = (detection: AiDetection) => `This mask is currently inter
             </button>
           </div>
         </div>
+
       </div>
     </div>
 
@@ -289,6 +328,48 @@ const confidenceNote = (detection: AiDetection) => `This mask is currently inter
         <div class="rounded-xl border border-zinc-200 bg-white p-3">
           <p class="font-semibold text-zinc-800">Interpretation notes</p>
           <p class="mt-1">{{ confidenceNote(infoDetection) }}</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Educational popup (student only, separate from confidence) -->
+  <div
+    v-if="eduDetection && eduContent"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/35 px-4"
+    @click.self="closeEduPopup()"
+  >
+    <div class="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-4 shadow-2xl">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold text-zinc-900">{{ eduDetection.name }}</p>
+          <p class="mt-0.5 text-xs text-zinc-500">Educational reference</p>
+        </div>
+        <button
+          type="button"
+          class="rounded-lg p-1 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-600"
+          @click="closeEduPopup()"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      </div>
+
+      <div class="mt-4 rounded-xl border border-violet-200 bg-violet-50/50 p-3">
+        <p class="mb-2 text-xs font-semibold text-violet-800">{{ eduContent.title }}</p>
+        <div class="space-y-2 text-xs leading-5 text-zinc-600">
+          <div class="rounded-xl border border-violet-100 bg-white p-3">
+            <p class="font-semibold text-violet-700">Pathology</p>
+            <p class="mt-1">{{ eduContent.pathology }}</p>
+          </div>
+          <div class="rounded-xl border border-violet-100 bg-white p-3">
+            <p class="font-semibold text-violet-700">Imaging Features</p>
+            <p class="mt-1">{{ eduContent.imagingFeatures }}</p>
+          </div>
+          <div class="rounded-xl border border-violet-100 bg-white p-3">
+            <p class="font-semibold text-violet-700">Clinical Context</p>
+            <p class="mt-1">{{ eduContent.clinicalContext }}</p>
+          </div>
         </div>
       </div>
     </div>

@@ -3,6 +3,8 @@ import { Layers, Upload } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { ref } from 'vue'
 import { useViewerStore } from '../stores/viewerStore'
+import { useAccountStore } from '../stores/accountStore'
+import AccountSwitcher from './AccountSwitcher.vue'
 import PatientInfoCard from './PatientInfoCard.vue'
 
 defineProps<{
@@ -10,13 +12,31 @@ defineProps<{
 }>()
 
 const store = useViewerStore()
+const accountStore = useAccountStore()
 const { currentPatient, isPatientLoaded } = storeToRefs(store)
+const { isStudent } = storeToRefs(accountStore)
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const isLoading = ref(false)
 
 const triggerFileUpload = () => {
   fileInputRef.value?.click()
+}
+
+const handleLoadDemo = async () => {
+  isLoading.value = true
+  try {
+    if (isStudent.value) {
+      await store.loadStudentDemo()
+    } else {
+      await store.loadPatient()
+    }
+  } catch (error) {
+    console.error('Failed to load demo:', error)
+    alert(error instanceof Error ? error.message : 'Failed to load demo scan.')
+  } finally {
+    isLoading.value = false
+  }
 }
 
 const handleFileUpload = async (event: Event) => {
@@ -44,11 +64,12 @@ const handleFileUpload = async (event: Event) => {
     <div class="flex items-center gap-2 p-1.5">
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 px-2.5 py-1 text-[11px] font-semibold text-zinc-100 transition hover:bg-zinc-800"
-        @click="store.loadPatient()"
+        class="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 px-2.5 py-1 text-[11px] font-semibold text-zinc-100 transition hover:bg-zinc-800 disabled:opacity-40"
+        :disabled="isLoading"
+        @click="handleLoadDemo"
       >
         <Layers class="h-3 w-3" />
-        Demo
+        {{ isLoading ? '...' : 'Demo' }}
       </button>
       <button
         type="button"
@@ -79,20 +100,23 @@ const handleFileUpload = async (event: Event) => {
         <span class="text-[10px] text-zinc-400">•</span>
         <span class="text-[10px] text-zinc-500">Age: {{ currentPatient.age }}</span>
       </template>
+      <span class="flex-1" />
+      <AccountSwitcher compact />
     </div>
   </header>
 
   <!-- Normal full header -->
   <header v-else class="rounded-2xl border border-zinc-200 bg-white/90 p-4 shadow-panel">
-    <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="flex flex-wrap items-center gap-3">
       <div class="flex items-center gap-3" data-tutorial="header-buttons">
         <button
           type="button"
-          class="inline-flex items-center gap-2 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-800"
-          @click="store.loadPatient()"
+          class="inline-flex items-center gap-2 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-800 disabled:opacity-40"
+          :disabled="isLoading"
+          @click="handleLoadDemo"
         >
           <Layers class="h-4 w-4" />
-          Load Demo
+          {{ isLoading ? 'Loading...' : 'Load Demo' }}
         </button>
         <button
         type="button"
@@ -115,6 +139,8 @@ const handleFileUpload = async (event: Event) => {
           · local NIfTI or DICOM volume
         </p>
       </div>
+      <span class="flex-1" />
+      <AccountSwitcher />
     </div>
 
     <div v-if="isPatientLoaded && currentPatient" class="mt-3">

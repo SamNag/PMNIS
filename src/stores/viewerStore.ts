@@ -1,7 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { mockPatient } from '../data/mockPatient'
-import { createMockBrainVolume } from '../data/mockVolume'
 import { makeId } from '../lib/ids'
 import { defaultLayerColors } from '../lib/layerColors'
 import { loadMedicalFile } from '../lib/medicalLoader'
@@ -314,9 +313,114 @@ export const useViewerStore = defineStore('viewer', () => {
     activeViewportId.value = 'vp-1'
   }
 
-  const loadPatient = () => {
-    const volume = createMockBrainVolume()
-    initializeLoadedStudy(volume, mockPatient, { tumorMaskLoaded: true, showTumorMask: false })
+  const loadPatient = async () => {
+    const response = await fetch(`${import.meta.env.BASE_URL}IMG-0001-00001.dcm`)
+    const blob = await response.blob()
+    const file = new File([blob], 'IMG-0001-00001.dcm', { type: 'application/dicom' })
+    const { volume, metadata } = await loadMedicalFile(file)
+
+    initializeLoadedStudy(
+      volume,
+      {
+        id: mockPatient.id,
+        name: metadata.patientName || mockPatient.name,
+        age: metadata.age ?? mockPatient.age,
+        scanDate: metadata.scanDate ?? mockPatient.scanDate,
+        studyType: metadata.studyType ?? mockPatient.studyType,
+      },
+      { tumorMaskLoaded: false, showTumorMask: false },
+    )
+  }
+
+  const loadStudentDemo = async () => {
+    const response = await fetch(`${import.meta.env.BASE_URL}IMG-0001-00001.dcm`)
+    const blob = await response.blob()
+    const file = new File([blob], 'IMG-0001-00001.dcm', { type: 'application/dicom' })
+    const { volume, metadata } = await loadMedicalFile(file)
+
+    initializeLoadedStudy(
+      volume,
+      {
+        id: mockPatient.id,
+        name: metadata.patientName || mockPatient.name,
+        age: metadata.age ?? mockPatient.age,
+        scanDate: metadata.scanDate ?? mockPatient.scanDate,
+        studyType: metadata.studyType ?? mockPatient.studyType,
+      },
+      { tumorMaskLoaded: false, showTumorMask: false },
+    )
+
+    // Create a pre-built tumor annotation layer so students see the finding immediately.
+    // Annotations need contour polygons to be visible in the 2D renderer.
+    // Use depth-aware sizing: nice circle in axial, small dot in coronal/sagittal.
+    const vol = volume
+    const cx = vol.width * 0.45
+    const cy = vol.height * 0.42
+    const cz = vol.depth * 0.48
+    const axialR = Math.max(6, Math.min(vol.width, vol.height) * 0.04)
+    const crossR = Math.min(axialR, Math.max(2, vol.depth * 0.15))
+    const layerId = makeId('manual')
+    const color = '#ef4444'
+    const seed = 42
+
+    const annotations: AnnotationMark[] = []
+
+    // Axial marks — spread across a few z-slices, with contour polygons
+    const zSpread = Math.max(2, Math.round(vol.depth * 0.12))
+    for (let dz = -zSpread; dz <= zSpread; dz++) {
+      const z = Math.round(cz) + dz
+      if (z < 0 || z >= vol.depth) continue
+      const t = Math.max(0, 1 - (dz * dz) / (zSpread * zSpread))
+      const r = axialR * Math.sqrt(t)
+      if (r < 1) continue
+      const contour = generateContour(cx, cy, r, dz, seed)
+      annotations.push({ view: 'axial', slice: z, x: cx, y: cy, radius: r, contour })
+    }
+
+    // Coronal marks — small radius capped to depth
+    const ySpread = Math.round(axialR * 0.6)
+    for (let dy = -ySpread; dy <= ySpread; dy++) {
+      const y = Math.round(cy) + dy
+      if (y < 0 || y >= vol.height) continue
+      const t = Math.max(0, 1 - (dy * dy) / (ySpread * ySpread))
+      const r = crossR * Math.sqrt(t)
+      if (r < 1) continue
+      const contour = generateContour(cx, cz, r, dy, seed + 100)
+      annotations.push({ view: 'coronal', slice: y, x: cx, y: cz, radius: r, contour })
+    }
+
+    // Sagittal marks — same small radius
+    const xSpread = Math.round(axialR * 0.6)
+    for (let dx = -xSpread; dx <= xSpread; dx++) {
+      const x = Math.round(cx) + dx
+      if (x < 0 || x >= vol.width) continue
+      const t = Math.max(0, 1 - (dx * dx) / (xSpread * xSpread))
+      const r = crossR * Math.sqrt(t)
+      if (r < 1) continue
+      const contour = generateContour(cy, cz, r, dx, seed + 200)
+      annotations.push({ view: 'sagittal', slice: x, x: cy, y: cz, radius: r, contour })
+    }
+
+    const tumorLayer: AnnotationLayer = {
+      id: layerId,
+      name: 'Tumor Finding',
+      type: 'manual',
+      visible: true,
+      color,
+      annotations,
+      timestamp: Date.now(),
+    }
+
+    annotationLayers.value.unshift(tumorLayer)
+    activeLayerId.value = layerId
+    annotationVersion.value++
+
+    // Navigate viewports to the tumor center so students see it immediately
+    for (const vp of viewports.value) {
+      if (vp.assignedView === 'axial') vp.sliceIndex = Math.round(cz)
+      else if (vp.assignedView === 'coronal') vp.sliceIndex = Math.round(cy)
+      else if (vp.assignedView === 'sagittal') vp.sliceIndex = Math.round(cx)
+    }
   }
 
   const loadMedicalPatient = async (file: File, patientName?: string) => {
@@ -1014,6 +1118,7 @@ export const useViewerStore = defineStore('viewer', () => {
     canRunAi,
     aiBoundingBox,
     loadPatient,
+    loadStudentDemo,
     loadMedicalPatient,
     setLayout,
     toggleFullscreenMode,
