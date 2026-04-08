@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { useViewerStore } from '../stores/viewerStore'
+import { sendParticipantMessage } from '../lib/wizardChannel'
 import AiAssistantPanel from './AiAssistantPanel.vue'
 import LayoutPanel from './LayoutPanel.vue'
 import LayerPanel from './LayerPanel.vue'
@@ -13,7 +14,30 @@ import ToolbarCategoryPanel from './ToolbarCategoryPanel.vue'
 import ViewerGrid from './ViewerGrid.vue'
 
 const store = useViewerStore()
-const { isFullscreenMode } = storeToRefs(store)
+const { isFullscreenMode, wozEnabled, aiState, aiMode, aiProgress, aiBoundingBox, isPatientLoaded, volumeData, renderSettings } = storeToRefs(store)
+
+// Send status updates to the wizard when relevant state changes
+watch(
+  [aiState, aiMode, aiProgress, aiBoundingBox, isPatientLoaded, renderSettings, () => store.activeViewport?.assignedView, () => store.activeViewport?.sliceIndex],
+  () => {
+    if (!wozEnabled.value) return
+    const vol = volumeData.value
+    const rs = renderSettings.value
+    sendParticipantMessage({
+      type: 'status-update',
+      aiState: aiState.value,
+      aiMode: aiMode.value,
+      aiProgress: aiProgress.value,
+      boundingBox: aiBoundingBox.value,
+      activeView: store.activeViewport?.assignedView ?? 'axial',
+      sliceIndex: store.activeViewport?.sliceIndex ?? 0,
+      patientLoaded: isPatientLoaded.value,
+      volumeDims: vol ? { width: vol.width, height: vol.height, depth: vol.depth } : null,
+      renderSettings: rs ? { windowCenter: rs.windowCenter, windowWidth: rs.windowWidth, contrast: rs.contrast, threshold: rs.threshold, inverted: rs.inverted } : null,
+    })
+  },
+  { immediate: true, deep: true },
+)
 
 const isSidebarOpen = ref(true)
 const showTutorial = ref(!sessionStorage.getItem('pmnis-tutorial-seen'))

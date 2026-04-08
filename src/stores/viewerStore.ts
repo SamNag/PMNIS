@@ -5,6 +5,12 @@ import { makeId } from '../lib/ids'
 import { defaultLayerColors } from '../lib/layerColors'
 import { loadMedicalFile } from '../lib/medicalLoader'
 import { getDefaultSliceForView, getViewMaxSlice } from '../lib/volume'
+import {
+  listenForCommands,
+  sendParticipantMessage,
+  type WizardCommand,
+} from '../lib/wizardChannel'
+import { wozLog } from '../lib/wizardLog'
 import type {
   AiDetection,
   AiMode,
@@ -161,6 +167,51 @@ export const useViewerStore = defineStore('viewer', () => {
   const aiRunMode = ref<AiMode | null>(null)
   /** Bounding box drawn by user for semi-auto AI mode. */
   const aiBoundingBox = ref<BoundingBox | null>(null)
+
+  // ── Wizard-of-Oz state ──
+  const wozEnabled = ref(false)
+  const wozWaitingForWizard = ref(false)
+  let wozResolve: ((cmd: WizardCommand) => void) | null = null
+  let wozCleanup: (() => void) | null = null
+
+  /** Activate WoZ mode – participant listens for wizard commands via SSE. */
+  const enableWoz = () => {
+    if (wozEnabled.value) return
+    wozEnabled.value = true
+    wozCleanup = listenForCommands((cmd) => {
+      if (cmd.type === 'inject-detection' && wozResolve) {
+        wozResolve(cmd)
+        wozResolve = null
+        wozWaitingForWizard.value = false
+      } else if (cmd.type === 'set-progress') {
+        aiProgress.value = cmd.value
+      } else if (cmd.type === 'complete-progress') {
+        aiProgress.value = 100
+      } else if (cmd.type === 'reset-ai') {
+        aiDetections.value = []
+        annotationLayers.value = annotationLayers.value.filter((l) => l.type !== 'ai')
+        selectedDetectionId.value = null
+        editingDetectionId.value = null
+        aiRunMode.value = null
+        aiState.value = 'idle'
+        aiProgress.value = 0
+        aiBoundingBox.value = null
+        wozWaitingForWizard.value = false
+        wozResolve = null
+        annotationVersion.value++
+      }
+    })
+  }
+
+  const disableWoz = () => {
+    wozEnabled.value = false
+    wozWaitingForWizard.value = false
+    wozResolve = null
+    if (wozCleanup) {
+      wozCleanup()
+      wozCleanup = null
+    }
+  }
   const activeViewport = computed<ViewportState | null>(
     () => viewports.value.find((viewport) => viewport.id === activeViewportId.value) ?? viewports.value[0] ?? null,
   )
@@ -822,6 +873,11 @@ export const useViewerStore = defineStore('viewer', () => {
     const detection = detectionIndex >= 0 ? aiDetections.value[detectionIndex] : null
     if (!detection) return
 
+    if (wozEnabled.value) {
+      wozLog('participant-accepted', { detectionId })
+      sendParticipantMessage({ type: 'detection-action', action: 'accepted', detectionId })
+    }
+
     const layer = findLayerById(detection.layerId)
     if (layer) {
       layer.type = 'manual'
@@ -847,6 +903,11 @@ export const useViewerStore = defineStore('viewer', () => {
     const detection = aiDetections.value.find((d) => d.id === detectionId)
     if (!detection) return
 
+    if (wozEnabled.value) {
+      wozLog('participant-rejected', { detectionId })
+      sendParticipantMessage({ type: 'detection-action', action: 'rejected', detectionId })
+    }
+
     aiDetections.value = aiDetections.value.filter((d) => d.id !== detectionId)
     if (editingDetectionId.value === detectionId) editingDetectionId.value = null
     if (selectedDetectionId.value === detectionId) selectedDetectionId.value = null
@@ -862,6 +923,11 @@ export const useViewerStore = defineStore('viewer', () => {
   const editDetection = (detectionId: string) => {
     const detection = aiDetections.value.find((d) => d.id === detectionId)
     if (!detection || detection.status === 'rejected') return
+
+    if (wozEnabled.value) {
+      wozLog('participant-edited', { detectionId })
+      sendParticipantMessage({ type: 'detection-action', action: 'edited', detectionId })
+    }
 
     selectDetection(detectionId)
     editingDetectionId.value = detectionId
@@ -965,6 +1031,70 @@ export const useViewerStore = defineStore('viewer', () => {
     editingDetectionId.value = null
     annotationLayers.value = annotationLayers.value.filter((l) => l.type !== 'ai')
 
+    const vol = volumeData.value
+    const box = aiBoundingBox.value
+
+    // ── WoZ path: notify wizard and wait for injection ──
+    if (wozEnabled.value) {
+      wozLog('participant-ran-ai', {
+        mode: aiMode.value,
+        boundingBox: box ? { view: box.view, slice: box.slice, x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2 } : null,
+      })
+
+      sendParticipantMessage({
+        type: 'ai-requested',
+        mode: aiMode.value,
+        boundingBox: box,
+      })
+
+      // Animate progress to ~85%, then pause
+      await new Promise<void>((resolve) => {
+        const timer = window.setInterval(() => {
+          aiProgress.value = Math.min(85, aiProgress.value + 5)
+          if (aiProgress.value >= 85) {
+            window.clearInterval(timer)
+            resolve()
+          }
+        }, 75)
+      })
+
+      wozWaitingForWizard.value = true
+
+      // Wait for wizard to inject a detection
+      const cmd = await new Promise<WizardCommand>((resolve) => {
+        wozResolve = resolve
+      })
+
+      if (cmd.type === 'inject-detection') {
+        // Smooth progress completion
+        await new Promise<void>((resolve) => {
+          const timer = window.setInterval(() => {
+            aiProgress.value = Math.min(100, aiProgress.value + 5)
+            if (aiProgress.value >= 100) {
+              window.clearInterval(timer)
+              resolve()
+            }
+          }, 40)
+        })
+
+        annotationLayers.value.unshift(cmd.layer)
+        aiDetections.value = [cmd.detection]
+
+        if (box) clearBoundingBox()
+        selectDetection(cmd.detection.id)
+        aiState.value = 'success'
+        annotationVersion.value++
+
+        wozLog('wizard-injected-detection', {
+          detectionId: cmd.detection.id,
+          label: cmd.detection.label,
+          name: cmd.detection.name,
+        })
+      }
+      return
+    }
+
+    // ── Normal simulation path (no wizard) ──
     await new Promise<void>((resolve) => {
       const timer = window.setInterval(() => {
         aiProgress.value = Math.min(100, aiProgress.value + 7)
@@ -974,9 +1104,6 @@ export const useViewerStore = defineStore('viewer', () => {
         }
       }, 75)
     })
-
-    const vol = volumeData.value
-    const box = aiBoundingBox.value
 
     const namePool = ['Suspicious Focus', 'Lesion Candidate', 'Enhancing Region', 'Tumor Candidate']
     const centerRanges = box
@@ -1165,5 +1292,9 @@ export const useViewerStore = defineStore('viewer', () => {
     acceptAi,
     finalizeAiResults,
     runAi,
+    wozEnabled,
+    wozWaitingForWizard,
+    enableWoz,
+    disableWoz,
   }
 })
