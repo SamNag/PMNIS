@@ -8,6 +8,7 @@ import { getDefaultSliceForView, getViewMaxSlice } from '../lib/volume'
 import {
   listenForCommands,
   sendParticipantMessage,
+  uploadVolumeForWizard,
   type WizardCommand,
 } from '../lib/wizardChannel'
 import { wozLog } from '../lib/wizardLog'
@@ -179,10 +180,21 @@ export const useViewerStore = defineStore('viewer', () => {
     if (wozEnabled.value) return
     wozEnabled.value = true
     wozCleanup = listenForCommands((cmd) => {
-      if (cmd.type === 'inject-detection' && wozResolve) {
-        wozResolve(cmd)
-        wozResolve = null
-        wozWaitingForWizard.value = false
+      if (cmd.type === 'inject-detection') {
+        // Always inject the detection into the store
+        annotationLayers.value.unshift(cmd.layer)
+        aiDetections.value = [...aiDetections.value, cmd.detection]
+        if (aiDetections.value.length === 1) {
+          selectDetection(cmd.detection.id)
+        }
+        annotationVersion.value++
+
+        // If runAi is waiting, resolve it to complete the progress bar
+        if (wozResolve) {
+          wozResolve(cmd)
+          wozResolve = null
+          wozWaitingForWizard.value = false
+        }
       } else if (cmd.type === 'set-progress') {
         aiProgress.value = cmd.value
       } else if (cmd.type === 'complete-progress') {
@@ -365,9 +377,9 @@ export const useViewerStore = defineStore('viewer', () => {
   }
 
   const loadPatient = async () => {
-    const response = await fetch(`${import.meta.env.BASE_URL}IMG-0001-00001.dcm`)
+    const response = await fetch(`${import.meta.env.BASE_URL}BraTS20_Training_002_t1ce.nii`)
     const blob = await response.blob()
-    const file = new File([blob], 'IMG-0001-00001.dcm', { type: 'application/dicom' })
+    const file = new File([blob], 'BraTS20_Training_002_t1ce.nii', { type: 'application/octet-stream' })
     const { volume, metadata } = await loadMedicalFile(file)
 
     initializeLoadedStudy(
@@ -381,12 +393,14 @@ export const useViewerStore = defineStore('viewer', () => {
       },
       { tumorMaskLoaded: false, showTumorMask: false },
     )
+
+    if (wozEnabled.value) uploadVolumeForWizard(file).catch(() => {})
   }
 
   const loadStudentDemo = async () => {
-    const response = await fetch(`${import.meta.env.BASE_URL}IMG-0001-00001.dcm`)
+    const response = await fetch(`${import.meta.env.BASE_URL}BraTS20_Training_002_t1ce.nii`)
     const blob = await response.blob()
-    const file = new File([blob], 'IMG-0001-00001.dcm', { type: 'application/dicom' })
+    const file = new File([blob], 'BraTS20_Training_002_t1ce.nii', { type: 'application/octet-stream' })
     const { volume, metadata } = await loadMedicalFile(file)
 
     initializeLoadedStudy(
@@ -488,6 +502,8 @@ export const useViewerStore = defineStore('viewer', () => {
       },
       { tumorMaskLoaded: false, showTumorMask: false },
     )
+
+    if (wozEnabled.value) uploadVolumeForWizard(file).catch(() => {})
   }
 
   const setLayout = (next: LayoutMode) => {
@@ -1060,37 +1076,26 @@ export const useViewerStore = defineStore('viewer', () => {
 
       wozWaitingForWizard.value = true
 
-      // Wait for wizard to inject a detection
-      const cmd = await new Promise<WizardCommand>((resolve) => {
+      // Wait for wizard to inject first detection (listener handles the actual injection)
+      await new Promise<WizardCommand>((resolve) => {
         wozResolve = resolve
       })
 
-      if (cmd.type === 'inject-detection') {
-        // Smooth progress completion
-        await new Promise<void>((resolve) => {
-          const timer = window.setInterval(() => {
-            aiProgress.value = Math.min(100, aiProgress.value + 5)
-            if (aiProgress.value >= 100) {
-              window.clearInterval(timer)
-              resolve()
-            }
-          }, 40)
-        })
+      // Smooth progress completion
+      await new Promise<void>((resolve) => {
+        const timer = window.setInterval(() => {
+          aiProgress.value = Math.min(100, aiProgress.value + 5)
+          if (aiProgress.value >= 100) {
+            window.clearInterval(timer)
+            resolve()
+          }
+        }, 40)
+      })
 
-        annotationLayers.value.unshift(cmd.layer)
-        aiDetections.value = [cmd.detection]
+      if (box) clearBoundingBox()
+      aiState.value = 'success'
 
-        if (box) clearBoundingBox()
-        selectDetection(cmd.detection.id)
-        aiState.value = 'success'
-        annotationVersion.value++
-
-        wozLog('wizard-injected-detection', {
-          detectionId: cmd.detection.id,
-          label: cmd.detection.label,
-          name: cmd.detection.name,
-        })
-      }
+      wozLog('wizard-injected-detection', { count: aiDetections.value.length })
       return
     }
 

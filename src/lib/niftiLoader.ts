@@ -89,6 +89,7 @@ export const loadNiftiArrayBuffer = (sourceData: ArrayBuffer): VolumeData => {
     spacingX,
     spacingY,
     spacingZ,
+    flipCorSag: true,
     mri,
     mask,
   }

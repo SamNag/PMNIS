@@ -23,6 +23,7 @@ export interface RenderTransform {
   drawW: number
   drawH: number
   rotated?: boolean
+  flip180?: boolean
   sourceWidth?: number
   sourceHeight?: number
 }
@@ -114,6 +115,8 @@ export const renderSlice = (
     view === 'sagittal' ? sourceWidth * spacingY : sourceWidth * spacingX
   const displaySourceHeight =
     view === 'axial' ? sourceHeight * spacingY : sourceHeight * spacingZ
+
+  const flip180 = !!(volume.flipCorSag && view !== 'axial')
 
   const baseTransform = getRenderTransform(displaySourceWidth, displaySourceHeight, canvas.width, canvas.height, settings)
   const rotatedTransform = getRenderTransform(displaySourceHeight, displaySourceWidth, canvas.width, canvas.height, settings)
@@ -222,7 +225,7 @@ export const renderSlice = (
   // ── Draw base image ──
   const offscreen = getOffscreen(canvas, sourceWidth, sourceHeight)
   const offscreenCtx = offscreen.getContext('2d')
-  if (!offscreenCtx) return { ...transform, rotated: useRotated, sourceWidth, sourceHeight }
+  if (!offscreenCtx) return { ...transform, rotated: useRotated, flip180, sourceWidth, sourceHeight }
 
   offscreenCtx.putImageData(buffer, 0, 0)
   ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -239,6 +242,12 @@ export const renderSlice = (
     ctx.rotate(Math.PI * 0.5)
     ctx.drawImage(offscreen, -transform.drawH * 0.5, -transform.drawW * 0.5, transform.drawH, transform.drawW)
     ctx.restore()
+  } else if (flip180) {
+    ctx.save()
+    ctx.translate(transform.drawX + transform.drawW * 0.5, transform.drawY + transform.drawH * 0.5)
+    ctx.rotate(Math.PI)
+    ctx.drawImage(offscreen, -transform.drawW * 0.5, -transform.drawH * 0.5, transform.drawW, transform.drawH)
+    ctx.restore()
   } else {
     ctx.drawImage(offscreen, transform.drawX, transform.drawY, transform.drawW, transform.drawH)
   }
@@ -246,22 +255,26 @@ export const renderSlice = (
   // ── Annotation layers ──
 
   // Helper: map slice-space mark to canvas coordinates
-  const markToCx = (mark: { x: number; y: number }) =>
-    useRotated
-      ? transform.drawX + ((sourceHeight - mark.y - 1) / sourceHeight) * transform.drawW
-      : transform.drawX + (mark.x / sourceWidth) * transform.drawW
-  const markToCy = (mark: { x: number; y: number }) =>
-    useRotated
-      ? transform.drawY + (mark.x / sourceWidth) * transform.drawH
-      : transform.drawY + (mark.y / sourceHeight) * transform.drawH
-  const toCanvasX = (px: number) =>
-    useRotated
-      ? transform.drawX + ((sourceHeight - px) / sourceHeight) * transform.drawW
-      : transform.drawX + (px / sourceWidth) * transform.drawW
-  const toCanvasY = (py: number) =>
-    useRotated
-      ? transform.drawY + (py / sourceWidth) * transform.drawH
-      : transform.drawY + (py / sourceHeight) * transform.drawH
+  const markToCx = (mark: { x: number; y: number }) => {
+    if (useRotated) return transform.drawX + ((sourceHeight - mark.y - 1) / sourceHeight) * transform.drawW
+    const nx = flip180 ? (sourceWidth - mark.x) : mark.x
+    return transform.drawX + (nx / sourceWidth) * transform.drawW
+  }
+  const markToCy = (mark: { x: number; y: number }) => {
+    if (useRotated) return transform.drawY + (mark.x / sourceWidth) * transform.drawH
+    const ny = flip180 ? (sourceHeight - mark.y) : mark.y
+    return transform.drawY + (ny / sourceHeight) * transform.drawH
+  }
+  const toCanvasX = (px: number) => {
+    if (useRotated) return transform.drawX + ((sourceHeight - px) / sourceHeight) * transform.drawW
+    const nx = flip180 ? (sourceWidth - px) : px
+    return transform.drawX + (nx / sourceWidth) * transform.drawW
+  }
+  const toCanvasY = (py: number) => {
+    if (useRotated) return transform.drawY + (py / sourceWidth) * transform.drawH
+    const ny = flip180 ? (sourceHeight - py) : py
+    return transform.drawY + (ny / sourceHeight) * transform.drawH
+  }
 
   const drawContourMark = (
     target: CanvasRenderingContext2D,
@@ -424,7 +437,7 @@ export const renderSlice = (
     }
   }
 
-  return { ...transform, rotated: useRotated, sourceWidth, sourceHeight }
+  return { ...transform, rotated: useRotated, flip180, sourceWidth, sourceHeight }
 }
 
 export const screenToSlice = (
@@ -452,8 +465,14 @@ export const screenToSlice = (
     }
   }
 
-  const localX = ((x - transform.drawX) / transform.drawW) * sourceWidth
-  const localY = ((y - transform.drawY) / transform.drawH) * sourceHeight
+  let localX = ((x - transform.drawX) / transform.drawW) * sourceWidth
+  let localY = ((y - transform.drawY) / transform.drawH) * sourceHeight
+
+  if (transform.flip180) {
+    localX = sourceWidth - localX
+    localY = sourceHeight - localY
+  }
+
   return {
     x: clamp(localX, 0, sourceWidth - 1),
     y: clamp(localY, 0, sourceHeight - 1),

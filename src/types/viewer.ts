@@ -44,6 +44,8 @@ export interface VolumeData {
   spacingX?: number
   spacingY?: number
   spacingZ?: number
+  /** When true, coronal and sagittal views are drawn rotated 180 degrees (NIfTI RAS convention). */
+  flipCorSag?: boolean
   mri: Uint8Array
   mask: Uint8Array
 }

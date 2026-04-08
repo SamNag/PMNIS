@@ -4,14 +4,20 @@ import type { IncomingMessage, ServerResponse } from 'http'
 /**
  * Vite plugin that adds Wizard-of-Oz relay endpoints.
  *
- * POST /woz/command   – wizard sends a JSON command
- * POST /woz/status    – participant sends status updates
- * GET  /woz/events    – SSE stream for the participant (receives wizard commands)
- * GET  /woz/status-events – SSE stream for the wizard (receives participant status)
+ * POST /woz/command        – wizard sends a JSON command
+ * POST /woz/status         – participant sends status updates
+ * GET  /woz/events         – SSE stream for the participant (receives wizard commands)
+ * GET  /woz/status-events  – SSE stream for the wizard (receives participant status)
+ * POST /woz/upload-volume  – participant uploads a medical file for wizard to mirror
+ * GET  /woz/volume         – wizard downloads the participant's current volume file
  */
 export function wozPlugin(): Plugin {
   const commandClients: ServerResponse[] = []
   const statusClients: ServerResponse[] = []
+
+  /** In-memory storage for the participant's uploaded volume file. */
+  let volumeBuffer: Buffer | null = null
+  let volumeFileName = ''
 
   const sendSSE = (clients: ServerResponse[], data: unknown) => {
     const payload = `data: ${JSON.stringify(data)}\n\n`
@@ -29,6 +35,13 @@ export function wozPlugin(): Plugin {
       let body = ''
       req.on('data', (chunk: Buffer) => (body += chunk.toString()))
       req.on('end', () => resolve(body))
+    })
+
+  const readBinaryBody = (req: IncomingMessage): Promise<Buffer> =>
+    new Promise((resolve) => {
+      const chunks: Buffer[] = []
+      req.on('data', (chunk: Buffer) => chunks.push(chunk))
+      req.on('end', () => resolve(Buffer.concat(chunks)))
     })
 
   const sseHeaders = {
@@ -95,6 +108,34 @@ export function wozPlugin(): Plugin {
             res.writeHead(400, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({ error: 'invalid json' }))
           }
+          return
+        }
+
+        // Participant uploads a volume file → stored in memory for wizard
+        if (url === '/woz/upload-volume' && req.method === 'POST') {
+          const fileName = (req.headers['x-filename'] as string) || 'volume.bin'
+          volumeBuffer = await readBinaryBody(req)
+          volumeFileName = fileName
+          // Notify wizard that volume changed
+          sendSSE(statusClients, { type: 'volume-changed', fileName })
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, size: volumeBuffer.length }))
+          return
+        }
+
+        // Wizard downloads the participant's current volume file
+        if (url === '/woz/volume' && req.method === 'GET') {
+          if (!volumeBuffer) {
+            res.writeHead(404, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ error: 'no volume uploaded' }))
+            return
+          }
+          res.writeHead(200, {
+            'Content-Type': 'application/octet-stream',
+            'Content-Disposition': `attachment; filename="${volumeFileName}"`,
+            'Content-Length': String(volumeBuffer.length),
+          })
+          res.end(volumeBuffer)
           return
         }
 

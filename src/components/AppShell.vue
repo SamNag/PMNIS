@@ -34,6 +34,7 @@ watch(
       patientLoaded: isPatientLoaded.value,
       volumeDims: vol ? { width: vol.width, height: vol.height, depth: vol.depth } : null,
       renderSettings: rs ? { windowCenter: rs.windowCenter, windowWidth: rs.windowWidth, contrast: rs.contrast, threshold: rs.threshold, inverted: rs.inverted } : null,
+      flipCorSag: !!(vol?.flipCorSag),
     })
   },
   { immediate: true, deep: true },

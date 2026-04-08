@@ -34,6 +34,7 @@ export interface ParticipantStatus {
   patientLoaded: boolean
   volumeDims: { width: number; height: number; depth: number } | null
   renderSettings: { windowCenter: number; windowWidth: number; contrast: number; threshold: number; inverted: boolean } | null
+  flipCorSag: boolean
 }
 
 export interface ParticipantAiRequested {
@@ -48,7 +49,12 @@ export interface ParticipantDetectionAction {
   detectionId: string
 }
 
-export type ParticipantMessage = ParticipantStatus | ParticipantAiRequested | ParticipantDetectionAction
+export interface ParticipantVolumeChanged {
+  type: 'volume-changed'
+  fileName: string
+}
+
+export type ParticipantMessage = ParticipantStatus | ParticipantAiRequested | ParticipantDetectionAction | ParticipantVolumeChanged
 
 // ── Wizard → Participant ──
 
@@ -94,6 +100,28 @@ export function listenForStatus(callback: (msg: ParticipantMessage) => void): ()
     } catch { /* ignore parse errors */ }
   }
   return () => es.close()
+}
+
+// ── Volume file relay ──
+
+export function uploadVolumeForWizard(file: File): Promise<void> {
+  return file.arrayBuffer().then((buf) =>
+    fetch('/woz/upload-volume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name },
+      body: buf,
+    }).then(() => undefined),
+  )
+}
+
+export async function downloadWizardVolume(): Promise<File | null> {
+  const res = await fetch('/woz/volume')
+  if (!res.ok) return null
+  const disposition = res.headers.get('Content-Disposition') ?? ''
+  const match = /filename="(.+)"/.exec(disposition)
+  const name = match?.[1] ?? 'volume.bin'
+  const blob = await res.blob()
+  return new File([blob], name, { type: 'application/octet-stream' })
 }
 
 // ── Prepared segmentation type ──
