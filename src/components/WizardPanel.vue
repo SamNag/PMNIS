@@ -11,7 +11,8 @@ import { makeId } from '../lib/ids'
 import { exportWozLog, wozLog } from '../lib/wizardLog'
 import { preparedSegmentations } from '../data/wizardSegmentations'
 import { loadMedicalFile } from '../lib/medicalLoader'
-import { getSliceSize } from '../lib/volume'
+import { createSphereAnnotation } from '../lib/annotations'
+import { getSliceSize, getViewMaxSlice } from '../lib/volume'
 import type { AiDetection, AnnotationLayer, AnnotationMark, BoundingBox, ViewType, VolumeData } from '../types/viewer'
 
 // ── Volume data (loaded independently by wizard) ──
@@ -82,6 +83,34 @@ const participantState = ref<{
   flipCorSag: false,
 })
 
+type WizardSliceView = Exclude<ViewType, 'threeD'>
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
+
+const activeMirrorView = computed<WizardSliceView | null>(() => (
+  participantState.value.activeView === 'threeD'
+    ? null
+    : participantState.value.activeView as WizardSliceView
+))
+
+const selectedInsertSlice = ref(0)
+
+const maxInsertSlice = computed(() => (
+  activeMirrorView.value && volume.value
+    ? getViewMaxSlice(activeMirrorView.value, volume.value)
+    : 0
+))
+
+const displaySliceIndex = computed(() => clamp(selectedInsertSlice.value, 0, maxInsertSlice.value))
+
+const syncInsertSliceToParticipant = () => {
+  if (!activeMirrorView.value || !volume.value) return
+  selectedInsertSlice.value = clamp(
+    participantState.value.sliceIndex,
+    0,
+    getViewMaxSlice(activeMirrorView.value, volume.value),
+  )
+}
+
 const lastAiRequest = ref<{
   mode: string
   boundingBox: BoundingBox | null
@@ -146,8 +175,6 @@ onUnmounted(() => {
 // ── Canvas rendering ──
 const mirrorCanvas = ref<HTMLCanvasElement | null>(null)
 
-const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
-
 const renderMirror = () => {
   const canvas = mirrorCanvas.value
   const vol = volume.value
@@ -156,10 +183,10 @@ const renderMirror = () => {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
 
-  const view = participantState.value.activeView as Exclude<ViewType, 'threeD'>
-  if (view === 'threeD' as string) return
+  const view = activeMirrorView.value
+  if (!view) return
 
-  const sliceIndex = participantState.value.sliceIndex
+  const sliceIndex = displaySliceIndex.value
   const { width: sw, height: sh } = getSliceSize(view, vol)
 
   const rect = canvas.parentElement!.getBoundingClientRect()
@@ -237,17 +264,28 @@ const renderMirror = () => {
 
   // Draw staged tumors as preview circles
   for (const item of stagedTumors.value) {
-    // Convert 3D center to current view slice coords
-    let sx: number, sy: number, onSlice: boolean
-    if (view === 'axial') { sx = item.cx; sy = item.cy; onSlice = Math.abs(item.cz - sliceIndex) <= item.radius }
-    else if (view === 'coronal') { sx = item.cx; sy = item.cz; onSlice = Math.abs(item.cy - sliceIndex) <= item.radius }
-    else { sx = item.cy; sy = item.cz; onSlice = Math.abs(item.cx - sliceIndex) <= item.radius }
+    let sx: number, sy: number, axisDistance: number
+    if (view === 'axial') {
+      sx = item.cx
+      sy = item.cy
+      axisDistance = Math.abs(item.cz - sliceIndex)
+    } else if (view === 'coronal') {
+      sx = item.cx
+      sy = item.cz
+      axisDistance = Math.abs(item.cy - sliceIndex)
+    } else {
+      sx = item.cy
+      sy = item.cz
+      axisDistance = Math.abs(item.cx - sliceIndex)
+    }
 
-    if (!onSlice) continue
+    const crossSectionRadiusSq = item.radius * item.radius - axisDistance * axisDistance
+    if (crossSectionRadiusSq <= 0) continue
+    const crossSectionRadius = Math.sqrt(crossSectionRadiusSq)
 
     const csX = flip ? drawX + ((sw - sx) / sw) * drawW : drawX + (sx / sw) * drawW
     const csY = flip ? drawY + ((sh - sy) / sh) * drawH : drawY + (sy / sh) * drawH
-    const csR = (item.radius / sw) * drawW
+    const csR = (crossSectionRadius / sw) * drawW
 
     ctx.beginPath()
     ctx.arc(csX, csY, csR, 0, Math.PI * 2)
@@ -301,60 +339,47 @@ const confidencePresets: ConfidencePreset[] = [
 
 const selectedConfidence = ref<ConfidencePreset>(confidencePresets[0]!)
 
-// ── Tumor size presets (larger radii for BraTS 240x240x155 volumes) ──
+watch(
+  [activeMirrorView, volume],
+  ([view, vol], previous) => {
+    if (!view || !vol) return
+    const prevView = previous?.[0]
+    if (view !== prevView || selectedInsertSlice.value > getViewMaxSlice(view, vol)) {
+      selectedInsertSlice.value = clamp(participantState.value.sliceIndex, 0, getViewMaxSlice(view, vol))
+    }
+  },
+  { immediate: true },
+)
+
+// ── Tumor size presets ──
 interface SizePreset { id: string; label: string; desc: string; radius: number }
 
 const sizePresets: SizePreset[] = [
-  { id: 's', label: 'S — Small', desc: 'Micro-lesion', radius: 12 },
-  { id: 'm', label: 'M — Medium', desc: 'Focal tumor', radius: 22 },
-  { id: 'l', label: 'L — Large', desc: 'Infiltrative mass', radius: 36 },
-  { id: 'xl', label: 'XL — Extra Large', desc: 'Extensive tumor', radius: 50 },
+  { id: 's', label: 'S — Small', desc: 'Micro-lesion', radius: 4 },
+  { id: 'm', label: 'M — Medium', desc: 'Focal tumor', radius: 8 },
+  { id: 'l', label: 'L — Large', desc: 'Broader focus', radius: 12 },
+  { id: 'xl', label: 'XL — Largest', desc: 'Max staging size', radius: 16 },
 ]
 
 const selectedSize = ref<SizePreset>(sizePresets[1]!)
 
-// ── Annotation generation ──
-const contourNoise = (theta: number, sliceOffset: number, seed: number): number =>
-  Math.sin(theta * 2.3 + seed * 1.7 + sliceOffset * 0.3) * 0.14 +
-  Math.sin(theta * 5.1 + seed * 3.2 - sliceOffset * 0.7) * 0.08 +
-  Math.cos(theta * 3.7 + seed * 0.9 + sliceOffset * 0.5) * 0.10 +
-  Math.sin(theta * 7.9 - seed * 2.1 + sliceOffset * 0.15) * 0.05
-
-const generateContour = (
-  cx: number, cy: number, baseRadius: number, sliceOffset: number, seed: number, numPoints = 36,
-): Array<{ x: number; y: number }> => {
-  const points: Array<{ x: number; y: number }> = []
-  for (let i = 0; i < numPoints; i++) {
-    const theta = (i / numPoints) * Math.PI * 2
-    const r = baseRadius * (1 + contourNoise(theta, sliceOffset, seed))
-    points.push({ x: cx + r * Math.cos(theta), y: cy + r * Math.sin(theta) })
-  }
-  return points
-}
-
-const generateAnnotations = (cx: number, cy: number, cz: number, radius: number, vol: VolumeData, seed: number): AnnotationMark[] => {
-  const marks: AnnotationMark[] = []
-  const r = Math.ceil(radius)
-  for (let dz = -r; dz <= r; dz++) {
-    const z = Math.round(cz) + dz; if (z < 0 || z >= vol.depth) continue
-    const cr = Math.sqrt(Math.max(0, radius * radius - dz * dz)); if (cr < 1) continue
-    marks.push({ view: 'axial', slice: z, x: cx, y: cy, radius: cr, contour: generateContour(cx, cy, cr, dz, seed) })
-  }
-  for (let dy = -r; dy <= r; dy++) {
-    const y = Math.round(cy) + dy; if (y < 0 || y >= vol.height) continue
-    const cr = Math.sqrt(Math.max(0, radius * radius - dy * dy)); if (cr < 1) continue
-    marks.push({ view: 'coronal', slice: y, x: cx, y: cz, radius: cr, contour: generateContour(cx, cz, cr, dy, seed + 100) })
-  }
-  for (let dx = -r; dx <= r; dx++) {
-    const x = Math.round(cx) + dx; if (x < 0 || x >= vol.width) continue
-    const cr = Math.sqrt(Math.max(0, radius * radius - dx * dx)); if (cr < 1) continue
-    marks.push({ view: 'sagittal', slice: x, x: cy, y: cz, radius: cr, contour: generateContour(cy, cz, cr, dx, seed + 200) })
-  }
-  return marks
-}
+const createSphereAnnotations = (cx: number, cy: number, cz: number, radius: number): AnnotationMark[] => [
+  createSphereAnnotation(cx, cy, cz, radius),
+]
 
 // ── Staging area: wizard places tumors, then injects all at once ──
-interface StagedTumor { id: string; cx: number; cy: number; cz: number; radius: number; confidence: number; name: string; color: string; seed: number }
+interface StagedTumor {
+  id: string
+  cx: number
+  cy: number
+  cz: number
+  radius: number
+  confidence: number
+  confidenceLabel: string
+  confidenceReason: string
+  name: string
+  color: string
+}
 
 const stagedTumors = ref<StagedTumor[]>([])
 
@@ -387,8 +412,9 @@ const canvasToSliceCoords = (clientX: number, clientY: number): { sx: number; sy
 
 const stageAtPosition = (sx: number, sy: number) => {
   const vol = volume.value; if (!vol) return
-  const view = participantState.value.activeView as Exclude<ViewType, 'threeD'>
-  const sliceIndex = participantState.value.sliceIndex
+  const view = activeMirrorView.value
+  if (!view) return
+  const sliceIndex = displaySliceIndex.value
   let cx: number, cy: number, cz: number
   if (view === 'axial') { cx = sx; cy = sy; cz = sliceIndex }
   else if (view === 'coronal') { cx = sx; cy = sliceIndex; cz = sy }
@@ -399,9 +425,10 @@ const stageAtPosition = (sx: number, sy: number) => {
     cx, cy, cz,
     radius: selectedSize.value.radius,
     confidence: selectedConfidence.value.value,
+    confidenceLabel: selectedConfidence.value.label,
+    confidenceReason: selectedConfidence.value.explanation,
     name: nameOptions[Math.floor(Math.random() * nameOptions.length)]!,
     color: detectionColors[stagedTumors.value.length % detectionColors.length]!,
-    seed: Math.floor(Math.random() * 10000),
   })
   addLog('Staged', `r=${selectedSize.value.radius} at (${Math.round(cx)},${Math.round(cy)},${Math.round(cz)})`)
 }
@@ -417,10 +444,11 @@ const injectAllStaged = () => {
   for (const item of stagedTumors.value) {
     const layerId = makeId('ai')
     const detId = makeId('det')
-    const annotations = generateAnnotations(item.cx, item.cy, item.cz, item.radius, vol, item.seed)
+    const annotations = createSphereAnnotations(item.cx, item.cy, item.cz, item.radius)
     const layer: AnnotationLayer = { id: layerId, name: item.name, type: 'ai', visible: true, color: item.color, annotations }
     const detection: AiDetection = {
       id: detId, name: item.name, label: 'Tumor', confidence: item.confidence,
+      confidenceLabel: item.confidenceLabel, confidenceReason: item.confidenceReason,
       centerX: item.cx, centerY: item.cy, centerZ: item.cz, radius: item.radius,
       status: 'pending', layerId, color: item.color,
     }
@@ -461,7 +489,21 @@ const injectFromPrepared = (seg: PreparedSegmentation) => {
   const layerId = makeId('ai'); const detId = makeId('det')
   const color = detectionColors[Math.floor(Math.random() * detectionColors.length)]!
   const layer: AnnotationLayer = { id: layerId, name: seg.name, type: 'ai', visible: true, color, annotations: seg.annotations }
-  const detection: AiDetection = { id: detId, name: seg.name, label: seg.label, confidence: seg.confidence, centerX: seg.centerX, centerY: seg.centerY, centerZ: seg.centerZ, radius: seg.radius, status: 'pending', layerId, color }
+  const detection: AiDetection = {
+    id: detId,
+    name: seg.name,
+    label: seg.label,
+    confidence: seg.confidence,
+    confidenceLabel: seg.confidenceLabel,
+    confidenceReason: seg.confidenceReason,
+    centerX: seg.centerX,
+    centerY: seg.centerY,
+    centerZ: seg.centerZ,
+    radius: seg.radius,
+    status: 'pending',
+    layerId,
+    color,
+  }
   sendWizardCommand({ type: 'inject-detection', layer, detection })
   addLog('Injected prepared', `${seg.label}: ${seg.regionHint}`)
   wozLog('wizard-injected-prepared', { segId: seg.id, label: seg.label })
@@ -469,6 +511,11 @@ const injectFromPrepared = (seg: PreparedSegmentation) => {
 
 // ── Controls ──
 const resetParticipantAi = () => { sendWizardCommand({ type: 'reset-ai' }); lastAiRequest.value = null; stagedTumors.value = []; addLog('Reset AI', 'Cleared all'); wozLog('wizard-reset-ai') }
+
+const requestTaskRating = () => {
+  sendWizardCommand({ type: 'show-task-rating' })
+  addLog('Rating popup', 'Prompt sent to participant')
+}
 
 const downloadLog = () => {
   const blob = new Blob([exportWozLog()], { type: 'application/json' })
@@ -511,6 +558,7 @@ const dragPreviewRadius = computed(() => {
       </div>
 
       <div class="flex items-center gap-2">
+        <button class="text-[11px] bg-blue-900/60 hover:bg-blue-800 text-blue-200 px-2 py-1 rounded" @click="requestTaskRating">Ask rating</button>
         <button class="text-[11px] bg-gray-800 hover:bg-gray-700 text-gray-400 px-2 py-1 rounded" @click="downloadLog">Export Log</button>
         <button class="text-[11px] bg-red-900/60 hover:bg-red-800 text-red-300 px-2 py-1 rounded" @click="resetParticipantAi">Reset AI</button>
       </div>
@@ -536,6 +584,29 @@ const dragPreviewRadius = computed(() => {
                 <div class="text-xs font-bold" :class="selectedSize.id === size.id ? 'text-blue-300' : 'text-gray-300'">{{ size.label }}</div>
                 <div class="text-[10px] text-gray-500">{{ size.desc }} (r={{ size.radius }})</div>
               </div>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="activeMirrorView && volume" class="rounded-lg border border-gray-800 bg-gray-900/60 p-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <div class="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">Center Slice</div>
+              <div class="text-[11px] text-gray-300">{{ activeMirrorView }} view</div>
+            </div>
+            <span class="text-xs font-mono text-blue-300">{{ displaySliceIndex }}</span>
+          </div>
+          <input
+            v-model.number="selectedInsertSlice"
+            type="range"
+            class="mt-2 w-full accent-blue-500"
+            min="0"
+            :max="maxInsertSlice"
+          />
+          <div class="mt-2 flex items-center justify-between gap-2 text-[10px] text-gray-500">
+            <span>Participant slice: {{ participantState.sliceIndex }}</span>
+            <button class="rounded bg-gray-800 px-2 py-1 text-gray-300 hover:bg-gray-700" @click="syncInsertSliceToParticipant">
+              Use participant
             </button>
           </div>
         </div>
@@ -604,6 +675,9 @@ const dragPreviewRadius = computed(() => {
         </div>
         <div v-else-if="!volume" class="absolute inset-0 flex items-center justify-center">
           <span class="text-gray-600 text-sm">No volume loaded</span>
+        </div>
+        <div v-else-if="!activeMirrorView" class="absolute inset-0 flex items-center justify-center px-6 text-center">
+          <span class="text-gray-500 text-sm">Participant is in 3D view. Switch them back to axial, coronal, or sagittal to place tumors.</span>
         </div>
 
         <div class="w-full h-full p-2">

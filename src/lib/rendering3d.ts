@@ -1,4 +1,5 @@
 import type { AnnotationLayer, AnnotationMark, VolumeData } from '../types/viewer'
+import { isSphereAnnotation } from './annotations'
 import { fitCanvasToDevicePixelRatio } from './rendering'
 
 // ─── WebGL Volume Ray Marching ───────────────────────────────────────────────
@@ -416,6 +417,79 @@ function setMaskPixel(
   pixels[idx + 3] = (r === 0 && g === 0 && b === 0) ? 0 : 255
 }
 
+function setMaskVoxel(
+  pixels: Uint8Array,
+  x: number,
+  y: number,
+  z: number,
+  r: number,
+  g: number,
+  b: number,
+  W: number,
+  H: number,
+  D: number,
+  tilesX: number,
+  atlasW: number,
+) {
+  if (x < 0 || x >= W || y < 0 || y >= H || z < 0 || z >= D) return
+  const col = z % tilesX
+  const row = Math.floor(z / tilesX)
+  const idx = ((row * H + y) * atlasW + (col * W + x)) * 4
+  pixels[idx] = r
+  pixels[idx + 1] = g
+  pixels[idx + 2] = b
+  pixels[idx + 3] = (r === 0 && g === 0 && b === 0) ? 0 : 255
+}
+
+function rasterizeSphereMark(
+  pixels: Uint8Array,
+  mark: AnnotationMark,
+  r: number,
+  g: number,
+  b: number,
+  W: number,
+  H: number,
+  D: number,
+  tilesX: number,
+  atlasW: number,
+) {
+  if (!isSphereAnnotation(mark)) return
+
+  const cx = mark.centerX
+  const cy = mark.centerY
+  const cz = mark.centerZ
+  const r2 = mark.radius * mark.radius
+
+  const z0 = Math.max(0, Math.floor(cz - mark.radius))
+  const z1 = Math.min(D - 1, Math.ceil(cz + mark.radius))
+
+  for (let z = z0; z <= z1; z += 1) {
+    const dz = z - cz
+    const yz2 = r2 - dz * dz
+    if (yz2 < 0) continue
+
+    const yRadius = Math.sqrt(yz2)
+    const y0 = Math.max(0, Math.floor(cy - yRadius))
+    const y1 = Math.min(H - 1, Math.ceil(cy + yRadius))
+
+    for (let y = y0; y <= y1; y += 1) {
+      const dy = y - cy
+      const xz2 = yz2 - dy * dy
+      if (xz2 < 0) continue
+
+      const xRadius = Math.sqrt(xz2)
+      const x0 = Math.max(0, Math.floor(cx - xRadius))
+      const x1 = Math.min(W - 1, Math.ceil(cx + xRadius))
+
+      for (let x = x0; x <= x1; x += 1) {
+        const dx = x - cx
+        if (dx * dx + dy * dy + dz * dz > r2) continue
+        setMaskVoxel(pixels, x, y, z, r, g, b, W, H, D, tilesX, atlasW)
+      }
+    }
+  }
+}
+
 function rasterizeMark(
   pixels: Uint8Array,
   mark: AnnotationMark,
@@ -428,6 +502,11 @@ function rasterizeMark(
   tilesX: number,
   atlasW: number,
 ) {
+  if (isSphereAnnotation(mark)) {
+    rasterizeSphereMark(pixels, mark, r, g, b, W, H, D, tilesX, atlasW)
+    return
+  }
+
   const { view, slice } = mark
 
   if (mark.contour && mark.contour.length >= 3) {
@@ -517,13 +596,8 @@ function buildMaskAtlasPixels(
   return pixels
 }
 
-function computeMaskVersion(layers: AnnotationLayer[], showMask: boolean): string {
-  let v = showMask ? '1' : '0'
-  for (const l of layers) {
-    const eraserCount = l.annotations.filter(m => m.eraser).length
-    v += `|${l.id}:${l.visible ? 1 : 0}:${l.annotations.length}:${eraserCount}`
-  }
-  return v
+function computeMaskVersion(showMask: boolean, nonce: string): string {
+  return `${showMask ? 1 : 0}|${nonce}`
 }
 
 function initGL(canvas: HTMLCanvasElement, volume: VolumeData): GLState | null {
@@ -625,6 +699,7 @@ export function renderThreeDVolume(
   clipZ: number = 1.0,
   layers: AnnotationLayer[] = [],
   showMask: boolean = false,
+  maskNonce: string = '',
 ): void {
   fitCanvasToDevicePixelRatio(canvas)
 
@@ -670,7 +745,7 @@ export function renderThreeDVolume(
   gl.uniform1i(locs.u_volume, 0)
 
   // Update mask atlas if annotations changed
-  const mv = computeMaskVersion(layers, showMask)
+  const mv = computeMaskVersion(showMask, maskNonce)
   if (mv !== state.maskVersion) {
     const hasVisibleAnnotations = layers.some((l) => l.visible && l.annotations.length > 0)
     if (!showMask && !hasVisibleAnnotations) {

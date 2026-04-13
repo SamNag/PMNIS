@@ -71,6 +71,10 @@ export interface AnnotationMark {
   x: number
   y: number
   radius: number
+  /** When present, treat this mark as a 3D sphere centered in voxel space. */
+  centerX?: number
+  centerY?: number
+  centerZ?: number
   /** Irregular contour polygon for AI detections (slice-space coordinates). */
   contour?: Array<{ x: number; y: number }>
   /** When true, this mark erases (subtracts) from the annotation area. */
@@ -110,6 +114,8 @@ export interface AiDetection {
   name: string
   label: string
   confidence: number
+  confidenceLabel?: string
+  confidenceReason?: string
   centerX: number
   centerY: number
   centerZ: number
@@ -181,4 +187,3 @@ export interface EducationalDescription {
   imagingFeatures: string
   clinicalContext: string
 }
-

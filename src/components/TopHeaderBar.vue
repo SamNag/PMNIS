@@ -69,7 +69,7 @@ const handleFileUpload = async (event: Event) => {
         @click="handleLoadDemo"
       >
         <Layers class="h-3 w-3" />
-        {{ isLoading ? '...' : 'Demo' }}
+        {{ isLoading ? '...' : 'Data' }}
       </button>
       <button
         type="button"
@@ -116,7 +116,7 @@ const handleFileUpload = async (event: Event) => {
           @click="handleLoadDemo"
         >
           <Layers class="h-4 w-4" />
-          {{ isLoading ? 'Loading...' : 'Load Demo' }}
+          {{ isLoading ? 'Loading...' : 'Load data' }}
         </button>
         <button
         type="button"
@@ -134,10 +134,7 @@ const handleFileUpload = async (event: Event) => {
           class="hidden"
           @change="handleFileUpload"
         />
-        <p class="text-xs text-zinc-500">
-          <span class="font-semibold text-zinc-700">Frontend-only prototype</span>
-          · local NIfTI or DICOM volume
-        </p>
+        <p class="text-xs text-zinc-500">local NIfTI or DICOM volume</p>
       </div>
       <span class="flex-1" />
       <AccountSwitcher />

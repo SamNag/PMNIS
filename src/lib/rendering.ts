@@ -1,4 +1,5 @@
 import type { AnnotationLayer, RenderSettings, ViewType, VolumeData } from '../types/viewer'
+import { projectAnnotationToSlice } from './annotations'
 import { getSliceSize } from './volume'
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
@@ -58,7 +59,9 @@ const getSliceFromLayer = (
   layer: AnnotationLayer,
   view: Exclude<ViewType, 'threeD'>,
   sliceIndex: number,
-) => layer.annotations.filter((mark) => mark.view === view && mark.slice === sliceIndex)
+) => layer.annotations
+  .map((mark) => projectAnnotationToSlice(mark, view, sliceIndex))
+  .filter((mark): mark is NonNullable<typeof mark> => mark !== null)
 
 // ── Per-canvas cached resources ──
 
@@ -309,6 +312,15 @@ export const renderSlice = (
   ) => {
     if (!marks.length) return
 
+    if (marks.length === 1) {
+      const mark = marks[0]!
+      target.beginPath()
+      target.arc(markToCx(mark), markToCy(mark), Math.max(mark.radius * radiusScale, 1), 0, Math.PI * 2)
+      target.fillStyle = `${layer.color}cc`
+      target.fill()
+      return
+    }
+
     const avgRadius = marks.reduce((sum, mark) => sum + mark.radius, 0) / marks.length
     const lineWidth = Math.max(avgRadius * radiusScale * 2, 2)
     const gapThreshold = avgRadius * 4
@@ -348,34 +360,42 @@ export const renderSlice = (
 
     target.save()
     target.globalCompositeOperation = 'destination-out'
-    target.strokeStyle = 'rgba(0,0,0,1)'
-    target.lineCap = 'round'
-    target.lineJoin = 'round'
+    if (marks.length === 1) {
+      const mark = marks[0]!
+      target.beginPath()
+      target.arc(markToCx(mark), markToCy(mark), Math.max(mark.radius * radiusScale, 1), 0, Math.PI * 2)
+      target.fillStyle = 'rgba(0,0,0,1)'
+      target.fill()
+    } else {
+      target.strokeStyle = 'rgba(0,0,0,1)'
+      target.lineCap = 'round'
+      target.lineJoin = 'round'
 
-    const avgRadius = marks.reduce((sum, mark) => sum + mark.radius, 0) / marks.length
-    const lineWidth = Math.max(avgRadius * radiusScale * 2, 2)
-    const gapThreshold = avgRadius * 4
+      const avgRadius = marks.reduce((sum, mark) => sum + mark.radius, 0) / marks.length
+      const lineWidth = Math.max(avgRadius * radiusScale * 2, 2)
+      const gapThreshold = avgRadius * 4
 
-    target.lineWidth = lineWidth
-    target.beginPath()
-    for (let i = 0; i < marks.length; i++) {
-      const mark = marks[i]!
-      const cx = markToCx(mark)
-      const cy = markToCy(mark)
-      if (i === 0) {
-        target.moveTo(cx, cy)
-      } else {
-        const prev = marks[i - 1]!
-        const dx = mark.x - prev.x
-        const dy = mark.y - prev.y
-        if (Math.hypot(dx, dy) > gapThreshold) {
+      target.lineWidth = lineWidth
+      target.beginPath()
+      for (let i = 0; i < marks.length; i++) {
+        const mark = marks[i]!
+        const cx = markToCx(mark)
+        const cy = markToCy(mark)
+        if (i === 0) {
           target.moveTo(cx, cy)
         } else {
-          target.lineTo(cx, cy)
+          const prev = marks[i - 1]!
+          const dx = mark.x - prev.x
+          const dy = mark.y - prev.y
+          if (Math.hypot(dx, dy) > gapThreshold) {
+            target.moveTo(cx, cy)
+          } else {
+            target.lineTo(cx, cy)
+          }
         }
       }
+      target.stroke()
     }
-    target.stroke()
     target.restore()
   }
 

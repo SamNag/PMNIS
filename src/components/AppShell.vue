@@ -14,7 +14,19 @@ import ToolbarCategoryPanel from './ToolbarCategoryPanel.vue'
 import ViewerGrid from './ViewerGrid.vue'
 
 const store = useViewerStore()
-const { isFullscreenMode, wozEnabled, aiState, aiMode, aiProgress, aiBoundingBox, isPatientLoaded, volumeData, renderSettings } = storeToRefs(store)
+const {
+  isFullscreenMode,
+  wozEnabled,
+  aiState,
+  aiMode,
+  aiProgress,
+  aiBoundingBox,
+  isPatientLoaded,
+  volumeData,
+  renderSettings,
+  taskRatingQuestion,
+  taskRatingVisible,
+} = storeToRefs(store)
 
 // Send status updates to the wizard when relevant state changes
 watch(
@@ -126,6 +138,38 @@ const closeTutorial = () => {
 
     <!-- Onboarding tutorial overlay -->
     <Teleport to="body">
+      <div
+        v-if="taskRatingVisible"
+        class="fixed inset-0 z-[400] flex items-center justify-center bg-zinc-950/45 px-4"
+      >
+        <div class="w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-6 shadow-2xl">
+          <p class="text-center text-lg font-semibold text-zinc-900">{{ taskRatingQuestion }}</p>
+          <p class="mt-2 text-center text-sm text-zinc-500">Tap one number from 1 to 5.</p>
+          <div class="mt-3 flex items-center justify-between text-xs font-medium text-zinc-500">
+            <span>1 = Very easy</span>
+            <span>5 = Very difficult</span>
+          </div>
+          <div class="mt-5 grid grid-cols-5 gap-3">
+            <button
+              v-for="item in [
+                { value: 1, label: 'Very easy' },
+                { value: 2, label: 'Easy' },
+                { value: 3, label: 'Medium' },
+                { value: 4, label: 'Hard' },
+                { value: 5, label: 'Very difficult' },
+              ]"
+              :key="item.value"
+              type="button"
+              class="rounded-2xl border border-zinc-200 bg-zinc-50 px-2 py-4 text-zinc-800 transition hover:border-zinc-300 hover:bg-zinc-100"
+              @click="store.closeTaskRatingPrompt(item.value)"
+            >
+              <span class="block text-lg font-bold">{{ item.value }}</span>
+              <span class="mt-1 block text-[11px] font-medium leading-tight text-zinc-500">{{ item.label }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <OnboardingTutorial v-if="showTutorial" @close="closeTutorial" />
     </Teleport>
   </div>

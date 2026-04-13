@@ -73,6 +73,8 @@ const closeConfidencePopup = () => {
 }
 
 const confidenceLevel = (detection: AiDetection) => {
+  if (detection.confidenceLabel?.trim()) return `${detection.confidenceLabel} confidence`
+
   const percent = Math.round(detection.confidence * 100)
   if (percent >= 95) return 'Very high confidence'
   if (percent >= 90) return 'High confidence'
@@ -94,7 +96,9 @@ const confidenceSummary = (detection: AiDetection) => {
   return 'This finding remains above the review threshold because the region is coherent, localized, and persistent across adjacent slices.'
 }
 
-const confidenceReason = (detection: AiDetection) => `This region stands out because signal contrast, contour continuity, and slice-to-slice consistency remain strong near (${Math.round(detection.centerX)}, ${Math.round(detection.centerY)}, ${Math.round(detection.centerZ)}).`
+const confidenceReason = (detection: AiDetection) =>
+  detection.confidenceReason?.trim()
+    || `This region stands out because signal contrast, contour continuity, and slice-to-slice consistency remain strong near (${Math.round(detection.centerX)}, ${Math.round(detection.centerY)}, ${Math.round(detection.centerZ)}).`
 
 const confidenceNote = (detection: AiDetection) => `This mask is currently interpreted as a ${detection.label.toLowerCase()} candidate with an estimated radius of about ${Math.max(1, Math.round(detection.radius))} px. If the borders do not match the anatomy, refine the region directly with the brush and eraser tools.`
 </script>
@@ -160,14 +164,14 @@ const confidenceNote = (detection: AiDetection) => `This mask is currently inter
       </button>
     </div>
 
-    <!-- Run AI -->
+    <!-- Run segmentation -->
     <button
       type="button"
       :disabled="!canRunAi"
       class="w-full rounded-lg bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-100 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
       @click="store.runAi()"
     >
-      Run AI
+      Run segmentation
     </button>
 
     <!-- ====== Detection list ====== -->

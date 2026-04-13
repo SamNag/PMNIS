@@ -4,6 +4,7 @@ import { mockPatient } from '../data/mockPatient'
 import { makeId } from '../lib/ids'
 import { defaultLayerColors } from '../lib/layerColors'
 import { loadMedicalFile } from '../lib/medicalLoader'
+import { slicePointToVolume } from '../lib/annotations'
 import { getDefaultSliceForView, getViewMaxSlice } from '../lib/volume'
 import {
   listenForCommands,
@@ -157,6 +158,8 @@ export const useViewerStore = defineStore('viewer', () => {
   const manualFuture = ref<Record<string, AnnotationMark[][]>>({})
   /** Shallow counter bumped whenever annotations change, to avoid deep-watching annotationLayers. */
   const annotationVersion = ref(0)
+  /** Lightweight counter for in-progress strokes so other viewports can redraw live. */
+  const annotationPreviewVersion = ref(0)
 
   const aiMode = ref<AiMode>('full')
   const aiState = ref<AiState>('idle')
@@ -164,6 +167,9 @@ export const useViewerStore = defineStore('viewer', () => {
   const aiDetections = ref<AiDetection[]>([])
   const selectedDetectionId = ref<string | null>(null)
   const editingDetectionId = ref<string | null>(null)
+  const taskRatingQuestion = ref('How easy was this task?')
+  const taskRatingVisible = ref(false)
+  const selectedTaskRating = ref<number | null>(null)
   /** Mode that was active when AI was last run (controls whether editing is allowed). */
   const aiRunMode = ref<AiMode | null>(null)
   /** Bounding box drawn by user for semi-auto AI mode. */
@@ -211,6 +217,10 @@ export const useViewerStore = defineStore('viewer', () => {
         wozWaitingForWizard.value = false
         wozResolve = null
         annotationVersion.value++
+      } else if (cmd.type === 'show-task-rating') {
+        taskRatingQuestion.value = cmd.question?.trim() || 'How easy was this task?'
+        selectedTaskRating.value = null
+        taskRatingVisible.value = true
       }
     })
   }
@@ -354,10 +364,14 @@ export const useViewerStore = defineStore('viewer', () => {
     manualFuture.value = {}
     aiState.value = 'idle'
     aiProgress.value = 0
+    annotationPreviewVersion.value = 0
     brushSize.value = 2.5
     aiDetections.value = []
     selectedDetectionId.value = null
     editingDetectionId.value = null
+    taskRatingQuestion.value = 'How easy was this task?'
+    taskRatingVisible.value = false
+    selectedTaskRating.value = null
     aiRunMode.value = null
     aiBoundingBox.value = null
     activeToolbarSection.value = 'image'
@@ -787,6 +801,7 @@ export const useViewerStore = defineStore('viewer', () => {
   }
 
   const endManualEdit = () => {
+    annotationPreviewVersion.value += 1
     annotationVersion.value++
   }
 
@@ -798,6 +813,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!history.length) return
     future.push(cloneAnnotations(layer.annotations))
     layer.annotations = history.pop() ?? []
+    annotationPreviewVersion.value += 1
     annotationVersion.value++
   }
 
@@ -809,6 +825,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!future.length) return
     history.push(cloneAnnotations(layer.annotations))
     layer.annotations = future.pop() ?? []
+    annotationPreviewVersion.value += 1
     annotationVersion.value++
   }
 
@@ -817,6 +834,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!layer || !isLayerEditable(layer) || !layer.annotations.length) return
     pushManualHistorySnapshot(layer)
     layer.annotations = []
+    annotationPreviewVersion.value += 1
     annotationVersion.value++
   }
 
@@ -827,13 +845,44 @@ export const useViewerStore = defineStore('viewer', () => {
     y: number,
     radius: number,
   ) => {
-    if (!canAnnotate.value || !activeLayer.value) return
+    if (!canAnnotate.value || !activeLayer.value || !volumeData.value) return
 
-    const mark: import('../types/viewer').AnnotationMark = { view, slice, x, y, radius }
+    const center = slicePointToVolume(view, slice, x, y)
+
+    const mark: import('../types/viewer').AnnotationMark = {
+      view,
+      slice,
+      x,
+      y,
+      radius,
+      centerX: center.x,
+      centerY: center.y,
+      centerZ: center.z,
+    }
     if (activeTool.value === 'eraser') {
       mark.eraser = true
     }
     activeLayer.value.annotations.push(mark)
+    annotationPreviewVersion.value += 1
+  }
+
+  const syncSlicesToVolumePoint = (x: number, y: number, z: number) => {
+    if (!volumeData.value) return
+
+    for (const viewport of viewports.value) {
+      if (viewport.assignedView === 'threeD') continue
+
+      if (viewport.assignedView === 'axial') {
+        const max = getViewMaxSlice('axial', volumeData.value)
+        viewport.sliceIndex = Math.max(0, Math.min(max, Math.round(z)))
+      } else if (viewport.assignedView === 'coronal') {
+        const max = getViewMaxSlice('coronal', volumeData.value)
+        viewport.sliceIndex = Math.max(0, Math.min(max, Math.round(y)))
+      } else if (viewport.assignedView === 'sagittal') {
+        const max = getViewMaxSlice('sagittal', volumeData.value)
+        viewport.sliceIndex = Math.max(0, Math.min(max, Math.round(x)))
+      }
+    }
   }
 
   const startBoundingBoxDraw = () => {
@@ -852,6 +901,11 @@ export const useViewerStore = defineStore('viewer', () => {
     if (activeTool.value === 'boundingBox') {
       activeTool.value = 'zoom'
     }
+  }
+
+  const closeTaskRatingPrompt = (rating?: number) => {
+    selectedTaskRating.value = Number.isFinite(rating) ? Number(rating) : null
+    taskRatingVisible.value = false
   }
 
   const setAiMode = (mode: AiMode) => {
@@ -1234,6 +1288,7 @@ export const useViewerStore = defineStore('viewer', () => {
     showTumorMask,
     annotationLayers,
     annotationVersion,
+    annotationPreviewVersion,
     activeLayer,
     activeLayerId,
     selectedLayerHasSelection,
@@ -1246,6 +1301,9 @@ export const useViewerStore = defineStore('viewer', () => {
     aiDetections,
     selectedDetectionId,
     editingDetectionId,
+    taskRatingQuestion,
+    taskRatingVisible,
+    selectedTaskRating,
     aiRunMode,
     canRunAi,
     aiBoundingBox,
@@ -1283,9 +1341,11 @@ export const useViewerStore = defineStore('viewer', () => {
     redoManualEdit,
     resetActiveManualLayer,
     addAnnotation,
+    syncSlicesToVolumePoint,
     startBoundingBoxDraw,
     setBoundingBox,
     clearBoundingBox,
+    closeTaskRatingPrompt,
     setAiMode,
     selectDetection,
     acceptDetection,

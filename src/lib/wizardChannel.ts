@@ -21,7 +21,12 @@ export interface WozResetAi {
   type: 'reset-ai'
 }
 
-export type WizardCommand = WozInjectDetection | WozSetProgress | WozCompleteProgress | WozResetAi
+export interface WozShowTaskRating {
+  type: 'show-task-rating'
+  question?: string
+}
+
+export type WizardCommand = WozInjectDetection | WozSetProgress | WozCompleteProgress | WozResetAi | WozShowTaskRating
 
 export interface ParticipantStatus {
   type: 'status-update'
@@ -131,6 +136,8 @@ export interface PreparedSegmentation {
   scenarioId: string
   label: string
   confidence: number
+  confidenceLabel?: string
+  confidenceReason?: string
   regionHint: string
   name: string
   centerX: number
