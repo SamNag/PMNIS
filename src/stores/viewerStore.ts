@@ -289,6 +289,7 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!isPatientLoaded.value || !manualTools.includes(activeTool.value) || !activeLayer.value) return false
     return isLayerEditable(activeLayer.value)
   })
+  const hasEditableLayerSelection = computed(() => !!activeLayer.value && isLayerEditable(activeLayer.value))
 
   const canRunAi = computed(() => {
     if (!isPatientLoaded.value || aiState.value === 'running') return false
@@ -527,6 +528,20 @@ export const useViewerStore = defineStore('viewer', () => {
       if (!viewports.value.slice(0, 3).some((viewport) => viewport.id === activeViewportId.value)) {
         activeViewportId.value = viewports.value[0]?.id ?? activeViewportId.value
       }
+      return
+    }
+
+    const existingThreeDViewport = viewports.value.find((viewport) => viewport.assignedView === 'threeD')
+    if (existingThreeDViewport) {
+      activeViewportId.value = existingThreeDViewport.id
+      return
+    }
+
+    const fallbackViewport = activeViewport.value ?? viewports.value[0]
+    if (fallbackViewport) {
+      fallbackViewport.assignedView = 'threeD'
+      fallbackViewport.sliceIndex = 0
+      activeViewportId.value = fallbackViewport.id
     }
   }
 
@@ -662,6 +677,35 @@ export const useViewerStore = defineStore('viewer', () => {
     activeLayerId.value = layerId
     getManualHistoryBucket(layerId)
     getManualFutureBucket(layerId)
+  }
+
+  const findFirstManualLayerId = (): string | null => {
+    for (const layer of annotationLayers.value) {
+      if (layer.type === 'manual') return layer.id
+      if (layer.type === 'folder' && layer.children) {
+        const child = layer.children.find((entry) => entry.type === 'manual')
+        if (child) return child.id
+      }
+    }
+    return null
+  }
+
+  const prepareManualDrawingLayer = (): boolean => {
+    if (!isPatientLoaded.value) return false
+    if (hasEditableLayerSelection.value) {
+      activeToolbarSection.value = 'manual'
+      return true
+    }
+
+    const existingManualLayerId = findFirstManualLayerId()
+    if (existingManualLayerId) {
+      activeLayerId.value = existingManualLayerId
+    } else {
+      createManualLayer()
+    }
+
+    activeToolbarSection.value = 'manual'
+    return true
   }
 
   /** Find a layer by id, searching also in folder children. */
@@ -1291,6 +1335,7 @@ export const useViewerStore = defineStore('viewer', () => {
     annotationPreviewVersion,
     activeLayer,
     activeLayerId,
+    hasEditableLayerSelection,
     selectedLayerHasSelection,
     canAnnotate,
     canUndoManual,
@@ -1328,6 +1373,7 @@ export const useViewerStore = defineStore('viewer', () => {
     setThreshold,
     setBrushSize,
     createManualLayer,
+    prepareManualDrawingLayer,
     setActiveLayer,
     toggleFolderExpanded,
     toggleLayerVisibility,

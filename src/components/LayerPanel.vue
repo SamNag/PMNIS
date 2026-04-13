@@ -277,7 +277,7 @@ const commitRename = () => {
       </template>
 
       <p v-if="!displayLayers.length" class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-3 py-3 text-xs text-zinc-500">
-        Click "New Layer" to create a tumor layer. Accepted results appear here automatically.
+        Click "New Layer" to create a tumor layer, or just pick Brush in the draw tools and the first layer will be created automatically. Accepted results appear here automatically.
       </p>
     </div>
   </section>

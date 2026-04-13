@@ -642,18 +642,14 @@ watch(
   { deep: true },
 )
 
-// Initialize 3D clip sliders from current viewport positions
+// In single-layout 3D, default to the fully open volume so the whole brain is visible.
 watch(
-  showClipSliders,
-  (show) => {
-    if (show && props.viewport.assignedView === 'threeD' && volumeData.value) {
-      const vps = viewports.value
-      const axialVp = vps.find(vp => vp.assignedView === 'axial')
-      const coronalVp = vps.find(vp => vp.assignedView === 'coronal')
-      const sagittalVp = vps.find(vp => vp.assignedView === 'sagittal')
-      fsClipAxial.value = axialVp?.sliceIndex ?? maxAxialSlice.value
-      fsClipCoronal.value = coronalVp?.sliceIndex ?? maxCoronalSlice.value
-      fsClipSagittal.value = sagittalVp?.sliceIndex ?? maxSagittalSlice.value
+  [showClipSliders, () => props.viewport.assignedView, volumeData],
+  ([show, assignedView, volume]) => {
+    if (show && assignedView === 'threeD' && volume) {
+      fsClipAxial.value = maxAxialSlice.value
+      fsClipCoronal.value = maxCoronalSlice.value
+      fsClipSagittal.value = maxSagittalSlice.value
     }
   },
   { immediate: true },

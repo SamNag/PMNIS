@@ -26,7 +26,7 @@ const {
   activeTool,
   activeToolbarSection,
   isPatientLoaded,
-  activeLayerId,
+  hasEditableLayerSelection,
   renderSettings,
   brushSize,
   canUndoManual,
@@ -47,7 +47,8 @@ const BRIGHTNESS_MAX = 220
 const toBrightnessSliderValue = (windowCenter: number) => BRIGHTNESS_MIN + BRIGHTNESS_MAX - windowCenter
 const fromBrightnessSliderValue = (sliderValue: number) => BRIGHTNESS_MIN + BRIGHTNESS_MAX - sliderValue
 
-const isManualReady = computed(() => !!activeLayerId.value && isPatientLoaded.value)
+const isManualReady = computed(() => hasEditableLayerSelection.value && isPatientLoaded.value)
+const canOpenManualTool = computed(() => isPatientLoaded.value)
 const brushSizeLabel = computed(() => (Number.isInteger(brushSize.value) ? `${brushSize.value}` : brushSize.value.toFixed(1)))
 
 const adjustControlConfig = computed(() => {
@@ -85,6 +86,8 @@ const adjustControlConfig = computed(() => {
 })
 
 const openManualTool = (tool: 'brush' | 'eraser') => {
+  if (!store.prepareManualDrawingLayer()) return
+
   if (tool === 'eraser') {
     overlayMode.value = null
     selectTool(tool, 'manual')
@@ -177,16 +180,16 @@ watch(activeToolbarSection, () => {
       <div v-else-if="activeToolbarSection === 'manual'" class="flex flex-col items-center gap-2">
         <TooltipIconButton
           :icon="Brush"
-          :label="isManualReady ? 'Brush' : 'Brush – select or create a finding first'"
+          :label="isManualReady ? 'Brush' : 'Brush – creates a layer first'"
           :active="activeTool === 'brush'"
-          :disabled="!isManualReady"
+          :disabled="!canOpenManualTool"
           @click="openManualTool('brush')"
         />
         <TooltipIconButton
           :icon="Eraser"
-          :label="isManualReady ? 'Rubber – clears drawing' : 'Rubber – select or create a finding first'"
+          :label="isManualReady ? 'Rubber – clears drawing' : 'Rubber – creates a layer first'"
           :active="activeTool === 'eraser'"
-          :disabled="!isManualReady"
+          :disabled="!canOpenManualTool"
           @click="openManualTool('eraser')"
         />
         <TooltipIconButton :icon="Undo2" label="Step back" :disabled="!canUndoManual" @click="store.undoManualEdit()" />
