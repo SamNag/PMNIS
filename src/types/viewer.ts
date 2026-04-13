@@ -79,6 +79,8 @@ export interface AnnotationMark {
   contour?: Array<{ x: number; y: number }>
   /** When true, this mark erases (subtracts) from the annotation area. */
   eraser?: boolean
+  /** When true, render this sphere as a slightly deformed organic shape (tumor look). */
+  tumor?: boolean
 }
 
 export interface AnnotationLayer {

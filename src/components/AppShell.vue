@@ -26,11 +26,33 @@ const {
   renderSettings,
   taskRatingQuestion,
   taskRatingVisible,
+  manualLayerHint,
 } = storeToRefs(store)
+
+const collectViewSlices = () => {
+  const slices = { axial: 0, coronal: 0, sagittal: 0 }
+  for (const vp of store.viewports) {
+    if (vp.assignedView === 'axial' || vp.assignedView === 'coronal' || vp.assignedView === 'sagittal') {
+      slices[vp.assignedView] = vp.sliceIndex
+    }
+  }
+  return slices
+}
 
 // Send status updates to the wizard when relevant state changes
 watch(
-  [aiState, aiMode, aiProgress, aiBoundingBox, isPatientLoaded, renderSettings, () => store.activeViewport?.assignedView, () => store.activeViewport?.sliceIndex],
+  [
+    aiState,
+    aiMode,
+    aiProgress,
+    aiBoundingBox,
+    isPatientLoaded,
+    renderSettings,
+    () => store.activeViewport?.assignedView,
+    () => store.activeViewport?.sliceIndex,
+    () => store.layout,
+    () => store.viewports.map((vp) => `${vp.id}:${vp.assignedView}:${vp.sliceIndex}`).join('|'),
+  ],
   () => {
     if (!wozEnabled.value) return
     const vol = volumeData.value
@@ -43,6 +65,13 @@ watch(
       boundingBox: aiBoundingBox.value,
       activeView: store.activeViewport?.assignedView ?? 'axial',
       sliceIndex: store.activeViewport?.sliceIndex ?? 0,
+      viewSlices: collectViewSlices(),
+      layout: store.layout,
+      visibleViewports: store.visibleViewports.map((vp) => ({
+        id: vp.id,
+        assignedView: vp.assignedView,
+        sliceIndex: vp.sliceIndex,
+      })),
       patientLoaded: isPatientLoaded.value,
       volumeDims: vol ? { width: vol.width, height: vol.height, depth: vol.depth } : null,
       renderSettings: rs ? { windowCenter: rs.windowCenter, windowWidth: rs.windowWidth, contrast: rs.contrast, threshold: rs.threshold, inverted: rs.inverted } : null,
@@ -171,6 +200,34 @@ const closeTutorial = () => {
       </div>
 
       <OnboardingTutorial v-if="showTutorial" @close="closeTutorial" />
+
+      <Transition
+        enter-active-class="transition duration-150 ease-out"
+        enter-from-class="opacity-0 translate-y-2"
+        enter-to-class="opacity-100 translate-y-0"
+        leave-active-class="transition duration-150 ease-in"
+        leave-from-class="opacity-100 translate-y-0"
+        leave-to-class="opacity-0 translate-y-2"
+      >
+        <div
+          v-if="manualLayerHint"
+          class="fixed left-1/2 top-6 z-[450] -translate-x-1/2 max-w-sm rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-lg"
+          role="status"
+        >
+          <div class="flex items-start gap-2">
+            <span class="font-semibold">Tip:</span>
+            <span class="flex-1">{{ manualLayerHint }}</span>
+            <button
+              type="button"
+              class="text-amber-700 hover:text-amber-900"
+              @click="store.dismissManualLayerHint()"
+              aria-label="Dismiss hint"
+            >
+              <span class="text-base leading-none">&times;</span>
+            </button>
+          </div>
+        </div>
+      </Transition>
     </Teleport>
   </div>
 </template>

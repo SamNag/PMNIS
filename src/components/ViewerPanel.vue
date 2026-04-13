@@ -4,7 +4,6 @@ import { storeToRefs } from 'pinia'
 import { Eye } from 'lucide-vue-next'
 import { useViewerStore } from '../stores/viewerStore'
 import type { ViewType, ViewportState } from '../types/viewer'
-import { slicePointToVolume } from '../lib/annotations'
 import { fitCanvasToDevicePixelRatio, renderSlice, screenToSlice, type RenderTransform } from '../lib/rendering'
 import { renderThreeDVolume, destroyThreeDVolume } from '../lib/rendering3d'
 import { getSliceSize, getViewMaxSlice } from '../lib/volume'
@@ -450,10 +449,7 @@ const drawAtPointer = (event: PointerEvent) => {
 
   const radius = getAnnotationRadius()
   const view = props.viewport.assignedView as Exclude<ViewType, 'threeD'>
-  const volumePoint = slicePointToVolume(view, props.viewport.sliceIndex, pointer.mappedX, pointer.mappedY)
   const lastPoint = lastDrawnPoint.value
-
-  store.syncSlicesToVolumePoint(volumePoint.x, volumePoint.y, volumePoint.z)
 
   if (lastPoint && lastPoint.slice === props.viewport.sliceIndex && lastPoint.view === view) {
     drawInterpolatedMarks(

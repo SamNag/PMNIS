@@ -1,4 +1,4 @@
-import type { AiDetection, AnnotationLayer, AnnotationMark, BoundingBox, ViewType } from '../types/viewer'
+import type { AiDetection, AnnotationLayer, AnnotationMark, BoundingBox, LayoutMode, ViewType } from '../types/viewer'
 
 // ── Message types ──
 
@@ -36,6 +36,12 @@ export interface ParticipantStatus {
   boundingBox: BoundingBox | null
   activeView: ViewType
   sliceIndex: number
+  /** Per-view slice indices so the wizard can mirror all three planes simultaneously. */
+  viewSlices: { axial: number; coronal: number; sagittal: number }
+  /** Participant layout mode (3x1 or single). */
+  layout: LayoutMode
+  /** Visible viewports the participant currently has on screen. */
+  visibleViewports: Array<{ id: string; assignedView: ViewType; sliceIndex: number }>
   patientLoaded: boolean
   volumeDims: { width: number; height: number; depth: number } | null
   renderSettings: { windowCenter: number; windowWidth: number; contrast: number; threshold: number; inverted: boolean } | null

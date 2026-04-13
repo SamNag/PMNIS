@@ -157,7 +157,7 @@ const commitRename = () => {
               <div class="flex items-center gap-2">
                 <button
                   type="button"
-                  class="h-3.5 w-3.5 rounded-full border border-white/40 shadow-sm transition hover:scale-105"
+                  class="h-3.5 w-3.5 shrink-0 rounded-full border border-white/40 shadow-sm transition hover:scale-105"
                   :style="{ backgroundColor: layer.color }"
                   title="Change layer color"
                   @click.stop="toggleColorPicker(layer.id)"
@@ -167,13 +167,33 @@ const commitRename = () => {
                   ref="editingNameInput"
                   v-model="editingName"
                   type="text"
-                  class="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-semibold text-zinc-700 outline-none ring-0 focus:border-zinc-400"
+                  class="w-full min-w-0 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-semibold text-zinc-700 outline-none ring-0 focus:border-zinc-400"
                   @click.stop
                   @blur="commitRename()"
                   @keydown.enter.prevent.stop="commitRename()"
                   @keydown.esc.prevent.stop="cancelRename()"
                 >
                 <p v-else class="truncate text-xs font-semibold">{{ layer.name }}</p>
+                <button
+                  type="button"
+                  class="shrink-0 rounded-md p-1 transition"
+                  :class="activeLayerId === layer.id ? 'hover:bg-zinc-700' : 'hover:bg-zinc-200'"
+                  :title="isEditingLayer(layer.id) ? 'Save name' : 'Rename layer'"
+                  @mousedown.prevent.stop="isEditingLayer(layer.id) ? commitRename() : startRename(layer)"
+                >
+                  <Pencil v-if="!isEditingLayer(layer.id)" class="h-3 w-3" />
+                  <Check v-else class="h-3 w-3 text-emerald-600" />
+                </button>
+                <button
+                  v-if="isEditingLayer(layer.id)"
+                  type="button"
+                  class="shrink-0 rounded-md p-1 transition"
+                  :class="activeLayerId === layer.id ? 'hover:bg-zinc-700' : 'hover:bg-zinc-200'"
+                  title="Cancel rename"
+                  @mousedown.prevent.stop="cancelRename()"
+                >
+                  <X class="h-3 w-3" />
+                </button>
               </div>
               <p
                 class="mt-0.5 text-[11px] uppercase tracking-wide"
@@ -183,26 +203,6 @@ const commitRename = () => {
               </p>
             </div>
             <div class="ml-2 flex items-center gap-1">
-              <button
-                type="button"
-                class="rounded-md p-1.5 transition"
-                :class="activeLayerId === layer.id ? 'hover:bg-zinc-700' : 'hover:bg-zinc-200'"
-                title="Rename layer"
-                @mousedown.prevent.stop="isEditingLayer(layer.id) ? commitRename() : startRename(layer)"
-              >
-                <Pencil v-if="!isEditingLayer(layer.id)" class="h-3.5 w-3.5" />
-                <Check v-else class="h-3.5 w-3.5 text-emerald-600" />
-              </button>
-              <button
-                v-if="isEditingLayer(layer.id)"
-                type="button"
-                class="rounded-md p-1.5 transition"
-                :class="activeLayerId === layer.id ? 'hover:bg-zinc-700' : 'hover:bg-zinc-200'"
-                title="Cancel rename"
-                @mousedown.prevent.stop="cancelRename()"
-              >
-                <X class="h-3.5 w-3.5" />
-              </button>
               <button
                 v-if="isStudent && getLayerEduContent(layer)"
                 type="button"

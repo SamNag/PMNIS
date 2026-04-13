@@ -147,6 +147,25 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const activeTool = ref<ToolId>('zoom')
   const activeToolbarSection = ref<ToolbarSection>('image')
+  const manualLayerHint = ref<string | null>(null)
+  let manualLayerHintTimer: ReturnType<typeof setTimeout> | null = null
+
+  const showManualLayerHint = (message: string) => {
+    manualLayerHint.value = message
+    if (manualLayerHintTimer) clearTimeout(manualLayerHintTimer)
+    manualLayerHintTimer = setTimeout(() => {
+      manualLayerHint.value = null
+      manualLayerHintTimer = null
+    }, 4000)
+  }
+
+  const dismissManualLayerHint = () => {
+    if (manualLayerHintTimer) {
+      clearTimeout(manualLayerHintTimer)
+      manualLayerHintTimer = null
+    }
+    manualLayerHint.value = null
+  }
 
   const renderSettings = ref<RenderSettings>(defaultRenderSettings())
   const brushSize = ref(2.5)
@@ -193,6 +212,9 @@ export const useViewerStore = defineStore('viewer', () => {
         if (aiDetections.value.length === 1) {
           selectDetection(cmd.detection.id)
         }
+        // Once findings arrive, the participant's drawn semi-auto area
+        // is no longer relevant — clear it so it stops being rendered.
+        aiBoundingBox.value = null
         annotationVersion.value++
 
         // If runAi is waiting, resolve it to complete the progress bar
@@ -286,7 +308,8 @@ export const useViewerStore = defineStore('viewer', () => {
   }
 
   const canAnnotate = computed(() => {
-    if (!isPatientLoaded.value || !manualTools.includes(activeTool.value) || !activeLayer.value) return false
+    if (!isPatientLoaded.value || activeToolbarSection.value !== 'manual') return false
+    if (!manualTools.includes(activeTool.value) || !activeLayer.value) return false
     return isLayerEditable(activeLayer.value)
   })
   const hasEditableLayerSelection = computed(() => !!activeLayer.value && isLayerEditable(activeLayer.value))
@@ -677,6 +700,7 @@ export const useViewerStore = defineStore('viewer', () => {
     activeLayerId.value = layerId
     getManualHistoryBucket(layerId)
     getManualFutureBucket(layerId)
+    dismissManualLayerHint()
   }
 
   const findFirstManualLayerId = (): string | null => {
@@ -694,18 +718,21 @@ export const useViewerStore = defineStore('viewer', () => {
     if (!isPatientLoaded.value) return false
     if (hasEditableLayerSelection.value) {
       activeToolbarSection.value = 'manual'
+      dismissManualLayerHint()
       return true
     }
 
     const existingManualLayerId = findFirstManualLayerId()
     if (existingManualLayerId) {
       activeLayerId.value = existingManualLayerId
-    } else {
-      createManualLayer()
+      activeToolbarSection.value = 'manual'
+      dismissManualLayerHint()
+      return true
     }
 
     activeToolbarSection.value = 'manual'
-    return true
+    showManualLayerHint('Create a new annotation layer first to start drawing.')
+    return false
   }
 
   /** Find a layer by id, searching also in folder children. */
@@ -722,6 +749,10 @@ export const useViewerStore = defineStore('viewer', () => {
 
   const setActiveLayer = (layerId: string) => {
     activeLayerId.value = layerId
+    const layer = findLayerById(layerId)
+    if (layer && isLayerEditable(layer)) {
+      dismissManualLayerHint()
+    }
   }
 
   const toggleFolderExpanded = (folderId: string) => {
@@ -1364,6 +1395,8 @@ export const useViewerStore = defineStore('viewer', () => {
     setSlice,
     setActiveToolbarSection,
     setActiveTool,
+    manualLayerHint,
+    dismissManualLayerHint,
     updateWindowWidth,
     updateWindowCenter,
     updateZoom,
