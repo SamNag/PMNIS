@@ -150,15 +150,6 @@ export const useViewerStore = defineStore('viewer', () => {
   const manualLayerHint = ref<string | null>(null)
   let manualLayerHintTimer: ReturnType<typeof setTimeout> | null = null
 
-  const showManualLayerHint = (message: string) => {
-    manualLayerHint.value = message
-    if (manualLayerHintTimer) clearTimeout(manualLayerHintTimer)
-    manualLayerHintTimer = setTimeout(() => {
-      manualLayerHint.value = null
-      manualLayerHintTimer = null
-    }, 4000)
-  }
-
   const dismissManualLayerHint = () => {
     if (manualLayerHintTimer) {
       clearTimeout(manualLayerHintTimer)
@@ -725,14 +716,13 @@ export const useViewerStore = defineStore('viewer', () => {
     const existingManualLayerId = findFirstManualLayerId()
     if (existingManualLayerId) {
       activeLayerId.value = existingManualLayerId
-      activeToolbarSection.value = 'manual'
-      dismissManualLayerHint()
-      return true
+    } else {
+      createManualLayer()
     }
 
     activeToolbarSection.value = 'manual'
-    showManualLayerHint('Create a new annotation layer first to start drawing.')
-    return false
+    dismissManualLayerHint()
+    return true
   }
 
   /** Find a layer by id, searching also in folder children. */
